@@ -12,14 +12,14 @@ reading its metadata, and exporting it to a PDF file.
 Add the package in Xcode via **File → Add Package Dependencies**:
 
 ```
-https://github.com/YOUR_ORG/DocReader
+https://github.com/germanhl36/DocReader
 ```
 
 Or add it to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/YOUR_ORG/DocReader.git", from: "1.0.0")
+    .package(url: "https://github.com/germanhl36/DocReader.git", from: "1.0.0")
 ]
 ```
 

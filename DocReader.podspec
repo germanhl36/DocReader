@@ -9,10 +9,10 @@ Pod::Spec.new do |s|
     and metadata, and exported to PDF using CoreGraphics — no UIKit required.
   DESC
 
-  s.homepage         = 'https://github.com/YOUR_ORG/DocReader'
+  s.homepage         = 'https://github.com/germanhl36/DocReader'
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
-  s.author           = { 'Your Name' => 'your@email.com' }
-  s.source           = { :git => 'https://github.com/YOUR_ORG/DocReader.git', :tag => s.version.to_s }
+  s.author           = { 'germanhl36' => 'germanhl36@users.noreply.github.com' }
+  s.source           = { :git => 'https://github.com/germanhl36/DocReader.git', :tag => s.version.to_s }
 
   s.ios.deployment_target = '16.0'
   s.swift_version = '6.0'
