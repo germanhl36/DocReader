@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build
+        run: swift build -c debug
+
+      - name: Generate fixtures
+        run: |
+          if command -v libreoffice &> /dev/null; then
+            mkdir -p Tests/DocReaderIntegrationTests/Fixtures
+            python3 scripts/generate_fixtures.py
+          else
+            echo "LibreOffice not available — skipping fixture generation"
+          fi
+
+      - name: Test with coverage
+        run: |
+          swift test \
+            --enable-code-coverage \
+            --parallel
+
+      - name: Check coverage threshold (≥ 80%)
+        run: |
+          xcrun llvm-cov report \
+            .build/debug/DocReaderPackageTests.xctest/Contents/MacOS/DocReaderPackageTests \
+            -instr-profile=.build/debug/codecov/default.profdata \
+            -ignore-filename-regex=".build|Tests" \
+            -use-color 2>/dev/null | tee coverage.txt
+          COVERAGE=$(grep TOTAL coverage.txt | awk '{print $NF}' | sed 's/%//')
+          echo "Coverage: ${COVERAGE}%"
+          python3 -c "
+          import sys
+          cov = float('${COVERAGE}')
+          if cov < 80.0:
+              print(f'Coverage {cov:.1f}% is below 80% threshold')
+              sys.exit(1)
+          print(f'Coverage {cov:.1f}% meets the 80% threshold')
+          "
+
+  build-release:
+    name: Release Build
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build release
+        run: swift build -c release
