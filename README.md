@@ -2,7 +2,7 @@
 
 A native Swift Package for reading and inspecting Microsoft Office documents on iOS.
 
-[![CI](https://github.com/YOUR_ORG/DocReader/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_ORG/DocReader/actions/workflows/ci.yml)
+[![CI](https://github.com/germanhl36/DocReader/actions/workflows/ci.yml/badge.svg)](https://github.com/germanhl36/DocReader/actions/workflows/ci.yml)
 [![Swift 6](https://img.shields.io/badge/Swift-6.0-orange)](https://swift.org)
 [![iOS 16+](https://img.shields.io/badge/iOS-16%2B-blue)](https://developer.apple.com/ios/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -29,7 +29,7 @@ A native Swift Package for reading and inspecting Microsoft Office documents on 
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/YOUR_ORG/DocReader.git", from: "1.0.0")
+    .package(url: "https://github.com/germanhl36/DocReader.git", from: "1.0.0")
 ]
 ```
 
@@ -80,13 +80,15 @@ Storage Adapter → FileManager / sandbox (Foundation only)
 ## Generating fixtures
 
 Integration tests expect fixture files in `Tests/DocReaderIntegrationTests/Fixtures/`.
-In CI, fixtures are generated via LibreOffice headless. To generate them locally:
+Run the included Python script to generate them locally:
 
 ```bash
-libreoffice --headless --convert-to docx tests/fixtures/source/*.odt --outdir Tests/DocReaderIntegrationTests/Fixtures/
+pip install xlwt
+python3 scripts/generate_fixtures.py
 ```
 
-Fixture files must be ≤ 500 KB each.
+The script produces 7 fixture files (OOXML + legacy formats). Fixture files are
+checked into the repository so CI does not require any additional tooling.
 
 ## License
 
