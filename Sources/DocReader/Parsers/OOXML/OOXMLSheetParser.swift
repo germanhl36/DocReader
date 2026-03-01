@@ -99,6 +99,79 @@ actor OOXMLSheetParser: DocReadable {
     }
 }
 
+// MARK: - DocContentProviding
+
+extension OOXMLSheetParser: DocContentProviding {
+    func buildPageContents() throws -> [PageContent] {
+        try extractor.validateOOXMLStructure()
+
+        // Load shared strings (optional — not all xlsx files have this)
+        var sharedStrings: [String] = []
+        if let ssData = try? extractor.extractEntry(path: "xl/sharedStrings.xml") {
+            let ssHandler = XLSXSharedStringsParser()
+            let ssParser = XMLParser(data: ssData)
+            ssParser.delegate = ssHandler
+            ssParser.parse()
+            sharedStrings = ssHandler.strings
+        }
+
+        // Load workbook relationships
+        guard let relsData = try? extractor.extractEntry(path: "xl/_rels/workbook.xml.rels") else {
+            return [.sheet(SheetPageContent(sheetName: "Sheet1", cells: []))]
+        }
+        let relsHandler = XLSXWorkbookRelsParser()
+        let relsParser = XMLParser(data: relsData)
+        relsParser.delegate = relsHandler
+        relsParser.parse()
+
+        // Load workbook (ordered sheets)
+        let wbData = try extractor.extractEntry(path: "xl/workbook.xml")
+        let wbHandler = XLSXWorkbookParser()
+        let wbParser = XMLParser(data: wbData)
+        wbParser.delegate = wbHandler
+        wbParser.parse()
+
+        var pages: [PageContent] = []
+        for sheet in wbHandler.sheets {
+            guard let path = relsHandler.relIdToPath[sheet.rId],
+                  let sheetData = try? extractor.extractEntry(path: path) else { continue }
+
+            let cellHandler = XLSXCellParser(sharedStrings: sharedStrings)
+            let cellParser = XMLParser(data: sheetData)
+            cellParser.delegate = cellHandler
+            cellParser.parse()
+
+            pages.append(.sheet(SheetPageContent(sheetName: sheet.name, cells: cellHandler.cells)))
+        }
+
+        return pages.isEmpty ? [.sheet(SheetPageContent(sheetName: "Sheet1", cells: []))] : pages
+    }
+}
+
+// MARK: - Internal helpers (accessible for tests)
+
+/// Converts a 0-based column index to an Excel-style column label (A, B, …, Z, AA, …).
+func columnLabel(_ index: Int) -> String {
+    var result = ""
+    var n = index + 1
+    while n > 0 {
+        n -= 1
+        result = String(UnicodeScalar(65 + (n % 26))!) + result
+        n /= 26
+    }
+    return result
+}
+
+/// Extracts the 0-based column index from an Excel cell reference such as "B3" or "AA1".
+func columnIndex(from ref: String) -> Int {
+    var result = 0
+    for char in ref.uppercased() {
+        guard char.isLetter, let ascii = char.asciiValue else { break }
+        result = result * 26 + Int(ascii - 64)
+    }
+    return result - 1
+}
+
 // MARK: - SAX Helpers
 
 private final class XLSXSheetCounter: NSObject, XMLParserDelegate, @unchecked Sendable {
@@ -169,6 +242,148 @@ private final class XLSXCoreParser: NSObject, XMLParserDelegate, @unchecked Send
         case "dcterms:modified": modified = value
         case "dcterms:created":  created = value
         default: break
+        }
+    }
+}
+
+/// Parses xl/sharedStrings.xml to extract the shared string table.
+private final class XLSXSharedStringsParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private(set) var strings: [String] = []
+
+    private var currentSIText = ""
+    private var currentText = ""
+    private var inT = false
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        switch elementName {
+        case "si":
+            currentSIText = ""
+        case "t":
+            inT = true
+            currentText = ""
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if inT { currentText += string }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?) {
+        switch elementName {
+        case "t":
+            inT = false
+            currentSIText += currentText
+        case "si":
+            strings.append(currentSIText)
+        default:
+            break
+        }
+    }
+}
+
+/// Parses xl/_rels/workbook.xml.rels to map relationship IDs to sheet paths.
+private final class XLSXWorkbookRelsParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private(set) var relIdToPath: [String: String] = [:]
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        guard elementName == "Relationship" else { return }
+        let type = attributes["Type"] ?? ""
+        guard type.contains("worksheet"), !type.contains("chartsheet") else { return }
+        guard let id = attributes["Id"], let target = attributes["Target"] else { return }
+
+        // Target is relative to xl/ directory (e.g. "worksheets/sheet1.xml")
+        let path: String
+        if target.hasPrefix("xl/") || target.hasPrefix("/xl/") {
+            path = target.hasPrefix("/") ? String(target.dropFirst()) : target
+        } else if target.hasPrefix("../") {
+            path = "xl/" + target.dropFirst(3)
+        } else {
+            path = "xl/\(target)"
+        }
+        relIdToPath[id] = path
+    }
+}
+
+/// Parses xl/workbook.xml to get the ordered list of sheet names and relationship IDs.
+private final class XLSXWorkbookParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private(set) var sheets: [(name: String, rId: String)] = []
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        guard elementName == "sheet" else { return }
+        let name = attributes["name"] ?? "Sheet"
+        let rId = attributes["r:id"] ?? attributes["rId"] ?? ""
+        if !rId.isEmpty {
+            sheets.append((name: name, rId: rId))
+        }
+    }
+}
+
+/// Parses a worksheet XML and extracts cell values.
+private final class XLSXCellParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private let sharedStrings: [String]
+    private(set) var cells: [SheetCellContent] = []
+
+    private var currentRef = ""
+    private var currentType = ""
+    private var currentValue = ""
+    private var inV = false
+
+    init(sharedStrings: [String]) {
+        self.sharedStrings = sharedStrings
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        switch elementName {
+        case "c":
+            currentRef = attributes["r"] ?? ""
+            currentType = attributes["t"] ?? ""
+            currentValue = ""
+        case "v":
+            inV = true
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if inV { currentValue += string }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?) {
+        switch elementName {
+        case "v":
+            inV = false
+        case "c":
+            guard !currentRef.isEmpty else { return }
+            let text: String
+            switch currentType {
+            case "s":
+                let idx = Int(currentValue) ?? 0
+                text = idx < sharedStrings.count ? sharedStrings[idx] : currentValue
+            case "b":
+                text = currentValue == "1" ? "TRUE" : "FALSE"
+            default:
+                text = currentValue
+            }
+            guard !text.isEmpty else { return }
+            let col = columnIndex(from: currentRef)
+            let rowStr = currentRef.drop(while: { $0.isLetter })
+            let row = max(0, (Int(rowStr) ?? 1) - 1)
+            cells.append(SheetCellContent(col: col, row: row, text: text))
+        default:
+            break
         }
     }
 }

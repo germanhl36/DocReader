@@ -72,13 +72,13 @@ actor OOXMLWordParser: DocReadable {
                 return pages
             }
         }
-        // Fallback: count <w:sectPr> in word/document.xml
+        // Fallback: count explicit <w:br w:type="page"/> breaks in word/document.xml
         let docData = try extractor.extractEntry(path: "word/document.xml")
-        let handler = OOXMLSectPrCounter()
+        let handler = OOXMLPageBreakCounter()
         let parser = XMLParser(data: docData)
         parser.delegate = handler
         parser.parse()
-        return max(1, handler.count)
+        return handler.count + 1
     }
 
     private func parsePageSize() throws -> CGSize {
@@ -114,6 +114,51 @@ actor OOXMLWordParser: DocReadable {
     }
 }
 
+// MARK: - DocContentProviding
+
+extension OOXMLWordParser: DocContentProviding {
+    func buildPageContents() throws -> [PageContent] {
+        try extractor.validateOOXMLStructure()
+        let pageSize = try parsePageSize()
+
+        let docData = try extractor.extractEntry(path: "word/document.xml")
+        let handler = OOXMLDocumentBodyParser()
+        let xmlParser = XMLParser(data: docData)
+        xmlParser.delegate = handler
+        xmlParser.parse()
+
+        let pages = splitIntoWordPages(
+            paragraphs: handler.paragraphs,
+            pageSize: pageSize,
+            margins: handler.pageMargins
+        )
+        return pages.map { .word($0) }
+    }
+}
+
+// MARK: - Internal helpers (accessible for tests)
+
+/// Splits a flat paragraph array into pages at `__pagebreak__` sentinels.
+func splitIntoWordPages(
+    paragraphs: [WordParagraphContent],
+    pageSize: CGSize,
+    margins: WordPageMargins
+) -> [WordPageContent] {
+    var pages: [WordPageContent] = []
+    var current: [WordParagraphContent] = []
+
+    for para in paragraphs {
+        if para.styleName == "__pagebreak__" {
+            pages.append(WordPageContent(paragraphs: current, pageSize: pageSize, margins: margins))
+            current = []
+        } else {
+            current.append(para)
+        }
+    }
+    pages.append(WordPageContent(paragraphs: current, pageSize: pageSize, margins: margins))
+    return pages
+}
+
 // MARK: - SAX Helpers (private)
 
 private final class OOXMLAppPropertiesParser: NSObject, XMLParserDelegate, @unchecked Sendable {
@@ -140,15 +185,16 @@ private final class OOXMLAppPropertiesParser: NSObject, XMLParserDelegate, @unch
     }
 }
 
-private final class OOXMLSectPrCounter: NSObject, XMLParserDelegate, @unchecked Sendable {
+/// Counts explicit page breaks (`<w:br w:type="page"/>`) to determine page count.
+private final class OOXMLPageBreakCounter: NSObject, XMLParserDelegate, @unchecked Sendable {
     var count = 0
 
     func parser(_ parser: XMLParser, didStartElement elementName: String,
                 namespaceURI: String?, qualifiedName: String?,
                 attributes: [String: String] = [:]) {
-        // Local name may come with namespace prefix stripped
-        if elementName == "w:sectPr" || elementName == "sectPr" {
-            count += 1
+        if elementName == "w:br" || elementName == "br" {
+            let breakType = attributes["w:type"] ?? attributes["type"]
+            if breakType == "page" { count += 1 }
         }
     }
 }
@@ -200,6 +246,156 @@ private final class OOXMLCorePropertiesParser: NSObject, XMLParserDelegate, @unc
         case "dcterms:modified": modified = value
         case "dcterms:created":  created = value
         default: break
+        }
+    }
+}
+
+/// Full SAX parser for word/document.xml — extracts paragraphs with run-level formatting.
+private final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private(set) var paragraphs: [WordParagraphContent] = []
+    private(set) var pageMargins = WordPageMargins(top: 72, bottom: 72, left: 72, right: 72)
+
+    // Paragraph state
+    private var inParagraph = false
+    private var currentParaStyle = "Normal"
+    private var currentParaSpacingAfter: CGFloat = 0
+    private var currentRuns: [WordRunContent] = []
+
+    // Run state
+    private var inRun = false
+    private var currentRunBold = false
+    private var currentRunItalic = false
+    private var currentRunFontSize: CGFloat = 12
+    private var currentRunColor: String? = nil
+    private var currentRunText = ""
+    private var inText = false
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        switch elementName {
+        case "w:p", "p":
+            inParagraph = true
+            currentParaStyle = "Normal"
+            currentParaSpacingAfter = 0
+            currentRuns = []
+
+        case "w:r", "r":
+            guard inParagraph else { return }
+            inRun = true
+            currentRunBold = false
+            currentRunItalic = false
+            currentRunFontSize = 12
+            currentRunColor = nil
+            currentRunText = ""
+
+        case "w:pStyle", "pStyle":
+            let val = attributes["w:val"] ?? attributes["val"] ?? "Normal"
+            currentParaStyle = val
+
+        case "w:spacing", "spacing":
+            if let afterStr = attributes["w:after"] ?? attributes["after"],
+               let afterTwips = Int(afterStr) {
+                currentParaSpacingAfter = CGFloat(afterTwips) / 20.0
+            }
+
+        case "w:b", "b":
+            guard inRun else { return }
+            let val = attributes["w:val"] ?? attributes["val"]
+            currentRunBold = val != "0"
+
+        case "w:i", "i":
+            guard inRun else { return }
+            let val = attributes["w:val"] ?? attributes["val"]
+            currentRunItalic = val != "0"
+
+        case "w:sz", "sz":
+            guard inRun else { return }
+            if let szStr = attributes["w:val"] ?? attributes["val"],
+               let sz = Int(szStr) {
+                currentRunFontSize = CGFloat(sz) / 2.0
+            }
+
+        case "w:color", "color":
+            guard inRun else { return }
+            let val = attributes["w:val"] ?? attributes["val"]
+            if val != "auto" { currentRunColor = val }
+
+        case "w:t", "t":
+            if inRun { inText = true }
+
+        case "w:br", "br":
+            let breakType = attributes["w:type"] ?? attributes["type"]
+            guard breakType == "page", inParagraph else { return }
+            // Flush any pending runs into a paragraph before the break
+            if !currentRuns.isEmpty {
+                paragraphs.append(WordParagraphContent(
+                    runs: currentRuns,
+                    styleName: currentParaStyle,
+                    spacingAfterPt: currentParaSpacingAfter
+                ))
+                currentRuns = []
+            }
+            // Sentinel marks a page boundary
+            paragraphs.append(WordParagraphContent(
+                runs: [],
+                styleName: "__pagebreak__",
+                spacingAfterPt: 0
+            ))
+
+        case "w:pgMar", "pgMar":
+            let topTwips    = Int(attributes["w:top"]    ?? attributes["top"]    ?? "1440") ?? 1440
+            let bottomTwips = Int(attributes["w:bottom"] ?? attributes["bottom"] ?? "1440") ?? 1440
+            let leftTwips   = Int(attributes["w:left"]   ?? attributes["left"]   ?? "1440") ?? 1440
+            let rightTwips  = Int(attributes["w:right"]  ?? attributes["right"]  ?? "1440") ?? 1440
+            pageMargins = WordPageMargins(
+                top:    CGFloat(topTwips)    / 20.0,
+                bottom: CGFloat(bottomTwips) / 20.0,
+                left:   CGFloat(leftTwips)   / 20.0,
+                right:  CGFloat(rightTwips)  / 20.0
+            )
+
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if inText { currentRunText += string }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?) {
+        switch elementName {
+        case "w:t", "t":
+            inText = false
+
+        case "w:r", "r":
+            guard inRun else { return }
+            if !currentRunText.isEmpty {
+                currentRuns.append(WordRunContent(
+                    text: currentRunText,
+                    bold: currentRunBold,
+                    italic: currentRunItalic,
+                    fontSizePt: currentRunFontSize,
+                    hexColor: currentRunColor
+                ))
+            }
+            inRun = false
+
+        case "w:p", "p":
+            guard inParagraph else { return }
+            if !currentRuns.isEmpty {
+                paragraphs.append(WordParagraphContent(
+                    runs: currentRuns,
+                    styleName: currentParaStyle,
+                    spacingAfterPt: currentParaSpacingAfter
+                ))
+            }
+            inParagraph = false
+
+        default:
+            break
         }
     }
 }

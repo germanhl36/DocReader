@@ -30,6 +30,12 @@ enum PDFExporter {
             throw DocReaderError.internalError("Failed to create PDF context")
         }
 
+        // Pre-build structured content for real rendering (OOXML parsers only)
+        var allContents: [PageContent]? = nil
+        if let provider = parser as? any DocContentProviding {
+            allContents = try await provider.buildPageContents()
+        }
+
         for pageIndex in pages {
             try Task.checkCancellation()
 
@@ -43,13 +49,24 @@ enum PDFExporter {
             context.translateBy(x: 0, y: size.height)
             context.scaleBy(x: 1, y: -1)
 
-            switch format.family {
-            case .word:
-                WordPageRenderer.render(in: context, size: size, pageIndex: pageIndex)
-            case .spreadsheet:
-                SheetPageRenderer.render(in: context, size: size, pageIndex: pageIndex)
-            case .presentation:
-                SlidePageRenderer.render(in: context, size: size, pageIndex: pageIndex)
+            if let contents = allContents, pageIndex < contents.count {
+                switch contents[pageIndex] {
+                case .word(let wordContent):
+                    WordPageRenderer.render(in: context, content: wordContent)
+                case .sheet(let sheetContent):
+                    SheetPageRenderer.render(in: context, size: size, content: sheetContent)
+                case .slide(let slideContent):
+                    SlidePageRenderer.render(in: context, size: size, content: slideContent)
+                }
+            } else {
+                switch format.family {
+                case .word:
+                    WordPageRenderer.renderPlaceholder(in: context, size: size, pageIndex: pageIndex)
+                case .spreadsheet:
+                    SheetPageRenderer.renderPlaceholder(in: context, size: size, pageIndex: pageIndex)
+                case .presentation:
+                    SlidePageRenderer.renderPlaceholder(in: context, size: size, pageIndex: pageIndex)
+                }
             }
 
             context.endPDFPage()

@@ -102,6 +102,45 @@ actor OOXMLSlideParser: DocReadable {
     }
 }
 
+// MARK: - DocContentProviding
+
+extension OOXMLSlideParser: DocContentProviding {
+    func buildPageContents() throws -> [PageContent] {
+        try extractor.validateOOXMLStructure()
+
+        // Load slide relationship IDs → paths
+        guard let relsData = try? extractor.extractEntry(path: "ppt/_rels/presentation.xml.rels") else {
+            return [.slide(SlidePageContent(textBoxes: []))]
+        }
+        let relsHandler = PPTXRelationshipParser()
+        let relsParser = XMLParser(data: relsData)
+        relsParser.delegate = relsHandler
+        relsParser.parse()
+
+        // Load presentation to get ordered slide rIds
+        let presData = try extractor.extractEntry(path: "ppt/presentation.xml")
+        let orderHandler = PPTXSlideOrderParser()
+        let orderParser = XMLParser(data: presData)
+        orderParser.delegate = orderHandler
+        orderParser.parse()
+
+        var pages: [PageContent] = []
+        for rId in orderHandler.orderedRIds {
+            guard let path = relsHandler.slideRelIds[rId],
+                  let slideData = try? extractor.extractEntry(path: path) else { continue }
+
+            let contentHandler = PPTXSlideContentParser()
+            let contentParser = XMLParser(data: slideData)
+            contentParser.delegate = contentHandler
+            contentParser.parse()
+
+            pages.append(.slide(SlidePageContent(textBoxes: contentHandler.textBoxes)))
+        }
+
+        return pages.isEmpty ? [.slide(SlidePageContent(textBoxes: []))] : pages
+    }
+}
+
 // MARK: - SAX Helpers
 
 private final class PPTXSlideIdCounter: NSObject, XMLParserDelegate, @unchecked Sendable {
@@ -159,6 +198,150 @@ private final class PPTXCoreParser: NSObject, XMLParserDelegate, @unchecked Send
         case "dcterms:modified": modified = value
         case "dcterms:created":  created = value
         default: break
+        }
+    }
+}
+
+/// Parses ppt/_rels/presentation.xml.rels to map slide rIds to their paths.
+private final class PPTXRelationshipParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private(set) var slideRelIds: [String: String] = [:]
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        guard elementName == "Relationship" else { return }
+        let type = attributes["Type"] ?? ""
+        // Match exactly the slide relationship type (not slideLayout, slideMaster, etc.)
+        guard type.hasSuffix("/slide") else { return }
+        guard let id = attributes["Id"], let target = attributes["Target"] else { return }
+
+        // Normalize target relative to ppt/ directory
+        let path: String
+        if target.hasPrefix("../") {
+            path = "ppt/" + target.dropFirst(3)
+        } else if target.hasPrefix("/") {
+            path = String(target.dropFirst())
+        } else {
+            path = "ppt/\(target)"
+        }
+        slideRelIds[id] = path
+    }
+}
+
+/// Reads the ordered r:id values from <p:sldId> in ppt/presentation.xml.
+private final class PPTXSlideOrderParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private(set) var orderedRIds: [String] = []
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        if elementName == "p:sldId" || elementName == "sldId" {
+            let rId = attributes["r:id"] ?? attributes["rId"] ?? ""
+            if !rId.isEmpty { orderedRIds.append(rId) }
+        }
+    }
+}
+
+/// Parses a slide XML and extracts positioned text boxes.
+private final class PPTXSlideContentParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private(set) var textBoxes: [SlideTextBoxContent] = []
+
+    private var inSP = false
+    private var isTitle = false
+    private var offX = 0
+    private var offY = 0
+    private var extCX = 0
+    private var extCY = 0
+    private var lines: [String] = []
+    private var inTxBody = false
+    private var inParagraph = false
+    private var currentParaText = ""
+    private var inT = false
+    private var currentText = ""
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        let local = elementName.components(separatedBy: ":").last ?? elementName
+
+        switch local {
+        case "sp":
+            inSP = true
+            isTitle = false
+            offX = 0; offY = 0; extCX = 0; extCY = 0
+            lines = []
+            inTxBody = false
+
+        case "ph":
+            guard inSP else { return }
+            let t = attributes["type"] ?? ""
+            isTitle = (t == "title" || t == "ctrTitle")
+
+        case "off":
+            guard inSP else { return }
+            offX = Int(attributes["x"] ?? "0") ?? 0
+            offY = Int(attributes["y"] ?? "0") ?? 0
+
+        case "ext":
+            guard inSP else { return }
+            extCX = Int(attributes["cx"] ?? "0") ?? 0
+            extCY = Int(attributes["cy"] ?? "0") ?? 0
+
+        case "txBody":
+            if inSP { inTxBody = true }
+
+        case "p":
+            guard inTxBody else { return }
+            inParagraph = true
+            currentParaText = ""
+
+        case "t":
+            guard inTxBody else { return }
+            inT = true
+            currentText = ""
+
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if inT { currentText += string }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?) {
+        let local = elementName.components(separatedBy: ":").last ?? elementName
+
+        switch local {
+        case "t":
+            inT = false
+            currentParaText += currentText
+
+        case "p":
+            if inParagraph, !currentParaText.isEmpty {
+                lines.append(currentParaText)
+            }
+            inParagraph = false
+
+        case "txBody":
+            inTxBody = false
+
+        case "sp":
+            if inSP, !lines.isEmpty {
+                let emuPt: CGFloat = 1.0 / 12700.0
+                let frame = CGRect(
+                    x: CGFloat(offX) * emuPt,
+                    y: CGFloat(offY) * emuPt,
+                    width:  CGFloat(extCX) * emuPt,
+                    height: CGFloat(extCY) * emuPt
+                )
+                textBoxes.append(SlideTextBoxContent(frame: frame, lines: lines, isTitle: isTitle))
+            }
+            inSP = false
+
+        default:
+            break
         }
     }
 }

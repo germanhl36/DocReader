@@ -2,13 +2,110 @@ import Foundation
 import CoreGraphics
 import CoreText
 
-/// Renders a placeholder spreadsheet page into a CoreGraphics context.
-///
-/// A full implementation would render cell grids from the parsed worksheet data.
+/// Renders spreadsheet pages into a CoreGraphics context.
 enum SheetPageRenderer {
+
+    // MARK: - Real content rendering
+
     @DocRenderActor
-    static func render(in context: CGContext, size: CGSize, pageIndex: Int) {
-        // White background
+    static func render(in context: CGContext, size: CGSize, content: SheetPageContent) {
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(origin: .zero, size: size))
+
+        let margin: CGFloat = 36
+        let headerHeight: CGFloat = 24
+
+        // Sheet name header
+        renderCTText(
+            content.sheetName,
+            in: context,
+            rect: CGRect(x: margin, y: margin, width: size.width - margin * 2, height: headerHeight),
+            fontSize: 14,
+            bold: true
+        )
+
+        guard !content.cells.isEmpty else { return }
+
+        let maxCol = content.cells.map { $0.col }.max() ?? 0
+        let maxRow = content.cells.map { $0.row }.max() ?? 0
+
+        let rowLabelWidth: CGFloat = 30
+        let gridOriginX = margin + rowLabelWidth
+        let gridOriginY = margin + headerHeight + 8
+
+        let availableWidth  = size.width  - gridOriginX - margin
+        let availableHeight = size.height - gridOriginY - margin
+
+        let colCount = max(1, maxCol + 1)
+        let rowCount = max(1, maxRow + 1)
+        let cellWidth  = min(80, availableWidth  / CGFloat(colCount))
+        let cellHeight = min(20, availableHeight / CGFloat(rowCount))
+
+        let visibleCols = Int(availableWidth  / cellWidth)
+        let visibleRows = Int(availableHeight / cellHeight)
+
+        // Column header row
+        for col in 0...min(maxCol, visibleCols) {
+            let x = gridOriginX + CGFloat(col) * cellWidth
+            renderCTText(
+                columnLabel(col),
+                in: context,
+                rect: CGRect(x: x + 1, y: gridOriginY, width: cellWidth - 2, height: cellHeight),
+                fontSize: 8,
+                bold: false
+            )
+        }
+
+        // Row numbers
+        for row in 0...min(maxRow, visibleRows) {
+            let y = gridOriginY + CGFloat(row + 1) * cellHeight
+            renderCTText(
+                "\(row + 1)",
+                in: context,
+                rect: CGRect(x: margin, y: y, width: rowLabelWidth - 2, height: cellHeight),
+                fontSize: 8,
+                bold: false
+            )
+        }
+
+        // Cell values
+        for cell in content.cells {
+            guard cell.col <= visibleCols, cell.row <= visibleRows else { continue }
+            let x = gridOriginX + CGFloat(cell.col) * cellWidth
+            let y = gridOriginY + CGFloat(cell.row + 1) * cellHeight
+            renderCTText(
+                cell.text,
+                in: context,
+                rect: CGRect(x: x + 2, y: y + 1, width: cellWidth - 4, height: cellHeight - 2),
+                fontSize: 8,
+                bold: false
+            )
+        }
+
+        // Grid lines
+        context.setStrokeColor(CGColor(red: 0.8, green: 0.8, blue: 0.8, alpha: 1))
+        context.setLineWidth(0.5)
+
+        let gridCols = min(maxCol, visibleCols) + 1
+        let gridRows = min(maxRow, visibleRows) + 2
+
+        for col in 0...gridCols {
+            let x = gridOriginX + CGFloat(col) * cellWidth
+            context.move(to: CGPoint(x: x, y: gridOriginY))
+            context.addLine(to: CGPoint(x: x, y: gridOriginY + CGFloat(gridRows) * cellHeight))
+        }
+        for row in 0...gridRows {
+            let y = gridOriginY + CGFloat(row) * cellHeight
+            context.move(to: CGPoint(x: gridOriginX, y: y))
+            context.addLine(to: CGPoint(x: gridOriginX + CGFloat(gridCols) * cellWidth, y: y))
+        }
+        context.strokePath()
+    }
+
+    // MARK: - Placeholder rendering
+
+    @DocRenderActor
+    static func renderPlaceholder(in context: CGContext, size: CGSize, pageIndex: Int) {
         context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
         context.fill(CGRect(origin: .zero, size: size))
 
@@ -22,7 +119,6 @@ enum SheetPageRenderer {
         context.setStrokeColor(CGColor(red: 0.85, green: 0.85, blue: 0.85, alpha: 1))
         context.setLineWidth(0.5)
 
-        // Draw grid lines
         for col in 0...cols {
             let x = gridOrigin.x + CGFloat(col) * cellWidth
             context.move(to: CGPoint(x: x, y: gridOrigin.y))
@@ -35,24 +131,28 @@ enum SheetPageRenderer {
         }
         context.strokePath()
 
-        // Sheet label
-        renderText(
+        renderCTText(
             "Sheet \(pageIndex + 1)",
             in: context,
             rect: CGRect(x: margin, y: margin, width: 200, height: cellHeight),
-            fontSize: 10
+            fontSize: 10,
+            bold: false
         )
     }
 
-    private static func renderText(
+    // MARK: - Private helpers
+
+    private static func renderCTText(
         _ text: String,
         in context: CGContext,
         rect: CGRect,
-        fontSize: CGFloat
+        fontSize: CGFloat,
+        bold: Bool
     ) {
-        let color = CGColor(red: 0.2, green: 0.2, blue: 0.2, alpha: 1)
+        let fontName = bold ? "Helvetica-Bold" : "Helvetica"
+        let color = CGColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1)
         let attributes: [CFString: Any] = [
-            kCTFontAttributeName: CTFontCreateWithName("Helvetica" as CFString, fontSize, nil),
+            kCTFontAttributeName: CTFontCreateWithName(fontName as CFString, fontSize, nil),
             kCTForegroundColorAttributeName: color
         ]
         let attrStr = CFAttributedStringCreate(nil, text as CFString, attributes as CFDictionary)!
