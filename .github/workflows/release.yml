@@ -27,7 +27,8 @@ jobs:
             -destination "generic/platform=iOS" \
             -archivePath build/DocReader-iOS.xcarchive \
             SKIP_INSTALL=NO \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+            OTHER_SWIFT_FLAGS="-Xfrontend -no-verify-emitted-module-interface"
 
       - name: Archive for iOS simulator (x86_64 + arm64)
         run: |
@@ -36,7 +37,8 @@ jobs:
             -destination "generic/platform=iOS Simulator" \
             -archivePath build/DocReader-iOS-Simulator.xcarchive \
             SKIP_INSTALL=NO \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+            OTHER_SWIFT_FLAGS="-Xfrontend -no-verify-emitted-module-interface"
 
       - name: Create XCFramework
         run: |
