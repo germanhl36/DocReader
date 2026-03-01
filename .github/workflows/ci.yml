@@ -44,7 +44,7 @@ jobs:
             .build/debug/DocReaderPackageTests.xctest/Contents/MacOS/DocReaderPackageTests \
             -instr-profile=.build/debug/codecov/default.profdata \
             -ignore-filename-regex=".build|Tests" \
-            -use-color 2>/dev/null | tee coverage.txt
+            2>/dev/null | tee coverage.txt
           # $(NF-3) selects line coverage; $NF is branch coverage which may be '-'
           COVERAGE=$(grep TOTAL coverage.txt | awk '{print $(NF-3)}' | sed 's/%//')
           echo "Coverage: ${COVERAGE}%"
