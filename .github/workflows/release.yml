@@ -20,29 +20,19 @@ jobs:
       - name: Resolve dependencies
         run: swift package resolve
 
-      - name: Archive for iOS device (arm64)
+      - name: Archive for macOS (arm64 + x86_64)
         run: |
           xcodebuild archive \
             -scheme $SCHEME \
-            -destination "generic/platform=iOS" \
-            -archivePath build/DocReader-iOS.xcarchive \
-            SKIP_INSTALL=NO \
-            INSTALL_PATH="/Library/Frameworks"
-
-      - name: Archive for iOS simulator (x86_64 + arm64)
-        run: |
-          xcodebuild archive \
-            -scheme $SCHEME \
-            -destination "generic/platform=iOS Simulator" \
-            -archivePath build/DocReader-iOS-Simulator.xcarchive \
+            -destination "generic/platform=macOS" \
+            -archivePath build/DocReader-macOS.xcarchive \
             SKIP_INSTALL=NO \
             INSTALL_PATH="/Library/Frameworks"
 
       - name: Create XCFramework
         run: |
           xcodebuild -create-xcframework \
-            -framework build/DocReader-iOS.xcarchive/Products/Library/Frameworks/DocReader.framework \
-            -framework build/DocReader-iOS-Simulator.xcarchive/Products/Library/Frameworks/DocReader.framework \
+            -framework build/DocReader-macOS.xcarchive/Products/Library/Frameworks/DocReader.framework \
             -output build/DocReader.xcframework
 
       - name: Zip XCFramework
