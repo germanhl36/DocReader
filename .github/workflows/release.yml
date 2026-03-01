@@ -26,7 +26,8 @@ jobs:
             -scheme $SCHEME \
             -destination "generic/platform=iOS" \
             -archivePath build/DocReader-iOS.xcarchive \
-            SKIP_INSTALL=NO
+            SKIP_INSTALL=NO \
+            INSTALL_PATH="/Library/Frameworks"
 
       - name: Archive for iOS simulator (x86_64 + arm64)
         run: |
@@ -34,7 +35,8 @@ jobs:
             -scheme $SCHEME \
             -destination "generic/platform=iOS Simulator" \
             -archivePath build/DocReader-iOS-Simulator.xcarchive \
-            SKIP_INSTALL=NO
+            SKIP_INSTALL=NO \
+            INSTALL_PATH="/Library/Frameworks"
 
       - name: Create XCFramework
         run: |
