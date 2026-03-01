@@ -31,8 +31,10 @@ jobs:
 
       - name: Create XCFramework
         run: |
+          FW=$(find build/DocReader-macOS.xcarchive -name "DocReader.framework" -type d | head -1)
+          echo "Framework path: $FW"
           xcodebuild -create-xcframework \
-            -framework build/DocReader-macOS.xcarchive/Products/Library/Frameworks/DocReader.framework \
+            -framework "$FW" \
             -output build/DocReader.xcframework
 
       - name: Zip XCFramework
