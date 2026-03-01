@@ -9,6 +9,8 @@ jobs:
   create-release:
     name: Create Release
     runs-on: macos-15
+    permissions:
+      contents: write
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
 
