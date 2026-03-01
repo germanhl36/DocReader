@@ -146,14 +146,16 @@ enum OLEPropertySetReader {
         guard vt == VT_FILETIME else { return nil }
 
         // FILETIME: 64-bit unsigned, 100-ns intervals since 1601-01-01 UTC
-        let raw = UInt64(bytes[offset + 2])
-                | (UInt64(bytes[offset + 3]) << 8)
-                | (UInt64(bytes[offset + 4]) << 16)
-                | (UInt64(bytes[offset + 5]) << 24)
-                | (UInt64(bytes[offset + 6]) << 32)
-                | (UInt64(bytes[offset + 7]) << 40)
-                | (UInt64(bytes[offset + 8]) << 48)
-                | (UInt64(bytes[offset + 9]) << 56)
+        // Split into two halves to avoid Swift type-checker timeout under release optimisation.
+        let lo: UInt64 = UInt64(bytes[offset + 2])
+                       | (UInt64(bytes[offset + 3]) << 8)
+                       | (UInt64(bytes[offset + 4]) << 16)
+                       | (UInt64(bytes[offset + 5]) << 24)
+        let hi: UInt64 = UInt64(bytes[offset + 6])
+                       | (UInt64(bytes[offset + 7]) << 8)
+                       | (UInt64(bytes[offset + 8]) << 16)
+                       | (UInt64(bytes[offset + 9]) << 24)
+        let raw = lo | (hi << 32)
 
         guard raw > 0 else { return nil }
 
