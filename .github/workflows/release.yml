@@ -6,12 +6,11 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
 jobs:
-  build-xcframework:
-    name: Build XCFramework
+  create-release:
+    name: Create Release
     runs-on: macos-15
     env:
-      DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
-      SCHEME: DocReader
+      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
 
     steps:
       - name: Checkout
@@ -20,39 +19,15 @@ jobs:
       - name: Resolve dependencies
         run: swift package resolve
 
-      - name: Archive for macOS (arm64 + x86_64)
-        run: |
-          xcodebuild archive \
-            -scheme $SCHEME \
-            -destination "generic/platform=macOS" \
-            -archivePath build/DocReader-macOS.xcarchive \
-            SKIP_INSTALL=NO \
-            INSTALL_PATH="/Library/Frameworks"
+      - name: Build
+        run: swift build -c release
 
-      - name: Create XCFramework
-        run: |
-          FW=$(find build/DocReader-macOS.xcarchive -name "DocReader.framework" -type d | head -1)
-          echo "Framework path: $FW"
-          xcodebuild -create-xcframework \
-            -framework "$FW" \
-            -output build/DocReader.xcframework
-
-      - name: Zip XCFramework
-        run: |
-          cd build
-          zip -r DocReader.xcframework.zip DocReader.xcframework
-          cd ..
-
-      - name: Compute checksum
-        id: checksum
-        run: |
-          SHA=$(swift package compute-checksum build/DocReader.xcframework.zip)
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
+      - name: Test
+        run: swift test --parallel
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/DocReader.xcframework.zip
           body: |
             ## DocReader ${{ github.ref_name }}
 
@@ -61,15 +36,6 @@ jobs:
             #### Swift Package Manager
             ```swift
             .package(url: "https://github.com/YOUR_ORG/DocReader.git", from: "${{ github.ref_name }}")
-            ```
-
-            #### Binary XCFramework
-            ```swift
-            .binaryTarget(
-                name: "DocReader",
-                url: "https://github.com/YOUR_ORG/DocReader/releases/download/${{ github.ref_name }}/DocReader.xcframework.zip",
-                checksum: "${{ steps.checksum.outputs.sha }}"
-            )
             ```
 
             See [CHANGELOG.md](CHANGELOG.md) for details.
