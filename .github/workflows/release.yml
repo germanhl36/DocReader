@@ -10,7 +10,7 @@ jobs:
     name: Build XCFramework
     runs-on: macos-15
     env:
-      DEVELOPER_DIR: /Applications/Xcode_16.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
       SCHEME: DocReader
 
     steps:
@@ -19,6 +19,9 @@ jobs:
 
       - name: Resolve dependencies
         run: swift package resolve
+
+      - name: Install iOS platform
+        run: xcodebuild -downloadPlatform iOS
 
       - name: Archive for iOS device (arm64)
         run: |
