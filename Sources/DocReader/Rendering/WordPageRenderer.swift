@@ -15,7 +15,7 @@ enum WordPageRenderer {
         let m = content.margins
         let contentRect = CGRect(
             x: m.left,
-            y: m.top,
+            y: m.bottom,
             width: content.pageSize.width - m.left - m.right,
             height: content.pageSize.height - m.top - m.bottom
         )
@@ -47,7 +47,7 @@ enum WordPageRenderer {
         renderCTText(
             "Page \(pageIndex + 1)",
             in: context,
-            rect: CGRect(x: margin, y: margin, width: contentRect.width, height: 40),
+            rect: CGRect(x: margin, y: size.height - margin - 40, width: contentRect.width, height: 40),
             fontSize: 14,
             color: CGColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 1)
         )

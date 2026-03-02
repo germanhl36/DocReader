@@ -15,11 +15,12 @@ enum SheetPageRenderer {
         let margin: CGFloat = 36
         let headerHeight: CGFloat = 24
 
-        // Sheet name header
+        // Sheet name header — near top of page in Y-UP
         renderCTText(
             content.sheetName,
             in: context,
-            rect: CGRect(x: margin, y: margin, width: size.width - margin * 2, height: headerHeight),
+            rect: CGRect(x: margin, y: size.height - margin - headerHeight,
+                         width: size.width - margin * 2, height: headerHeight),
             fontSize: 14,
             bold: true
         )
@@ -31,10 +32,9 @@ enum SheetPageRenderer {
 
         let rowLabelWidth: CGFloat = 30
         let gridOriginX = margin + rowLabelWidth
-        let gridOriginY = margin + headerHeight + 8
 
         let availableWidth  = size.width  - gridOriginX - margin
-        let availableHeight = size.height - gridOriginY - margin
+        let availableHeight = size.height - margin - headerHeight - 8 - margin
 
         let colCount = max(1, maxCol + 1)
         let rowCount = max(1, maxRow + 1)
@@ -44,21 +44,25 @@ enum SheetPageRenderer {
         let visibleCols = Int(availableWidth  / cellWidth)
         let visibleRows = Int(availableHeight / cellHeight)
 
-        // Column header row
+        // gridYUp: the visual top of the grid (col-labels row top) in Y-UP coordinates.
+        // Measures from bottom: page top minus top margin minus header minus gap.
+        let gridYUp = size.height - margin - headerHeight - 8
+
+        // Column header row — rect bottom at gridYUp - cellHeight
         for col in 0...min(maxCol, visibleCols) {
             let x = gridOriginX + CGFloat(col) * cellWidth
             renderCTText(
                 columnLabel(col),
                 in: context,
-                rect: CGRect(x: x + 1, y: gridOriginY, width: cellWidth - 2, height: cellHeight),
+                rect: CGRect(x: x + 1, y: gridYUp - cellHeight, width: cellWidth - 2, height: cellHeight),
                 fontSize: 8,
                 bold: false
             )
         }
 
-        // Row numbers
+        // Row numbers — data row R is one row below col labels
         for row in 0...min(maxRow, visibleRows) {
-            let y = gridOriginY + CGFloat(row + 1) * cellHeight
+            let y = gridYUp - CGFloat(row + 2) * cellHeight
             renderCTText(
                 "\(row + 1)",
                 in: context,
@@ -72,7 +76,7 @@ enum SheetPageRenderer {
         for cell in content.cells {
             guard cell.col <= visibleCols, cell.row <= visibleRows else { continue }
             let x = gridOriginX + CGFloat(cell.col) * cellWidth
-            let y = gridOriginY + CGFloat(cell.row + 1) * cellHeight
+            let y = gridYUp - CGFloat(cell.row + 2) * cellHeight
             renderCTText(
                 cell.text,
                 in: context,
@@ -91,11 +95,11 @@ enum SheetPageRenderer {
 
         for col in 0...gridCols {
             let x = gridOriginX + CGFloat(col) * cellWidth
-            context.move(to: CGPoint(x: x, y: gridOriginY))
-            context.addLine(to: CGPoint(x: x, y: gridOriginY + CGFloat(gridRows) * cellHeight))
+            context.move(to: CGPoint(x: x, y: gridYUp))
+            context.addLine(to: CGPoint(x: x, y: gridYUp - CGFloat(gridRows) * cellHeight))
         }
         for row in 0...gridRows {
-            let y = gridOriginY + CGFloat(row) * cellHeight
+            let y = gridYUp - CGFloat(row) * cellHeight
             context.move(to: CGPoint(x: gridOriginX, y: y))
             context.addLine(to: CGPoint(x: gridOriginX + CGFloat(gridCols) * cellWidth, y: y))
         }
@@ -110,31 +114,34 @@ enum SheetPageRenderer {
         context.fill(CGRect(origin: .zero, size: size))
 
         let margin: CGFloat = 36
-        let gridOrigin = CGPoint(x: margin, y: margin)
         let cellWidth: CGFloat = 80
         let cellHeight: CGFloat = 20
         let cols = Int((size.width - margin * 2) / cellWidth)
         let rows = Int((size.height - margin * 2) / cellHeight)
 
+        // In Y-UP: grid top = size.height - margin, grid bottom = margin
+        let gridTop = size.height - margin
+        let gridLeft = margin
+
         context.setStrokeColor(CGColor(red: 0.85, green: 0.85, blue: 0.85, alpha: 1))
         context.setLineWidth(0.5)
 
         for col in 0...cols {
-            let x = gridOrigin.x + CGFloat(col) * cellWidth
-            context.move(to: CGPoint(x: x, y: gridOrigin.y))
-            context.addLine(to: CGPoint(x: x, y: gridOrigin.y + CGFloat(rows) * cellHeight))
+            let x = gridLeft + CGFloat(col) * cellWidth
+            context.move(to: CGPoint(x: x, y: margin))
+            context.addLine(to: CGPoint(x: x, y: gridTop))
         }
         for row in 0...rows {
-            let y = gridOrigin.y + CGFloat(row) * cellHeight
-            context.move(to: CGPoint(x: gridOrigin.x, y: y))
-            context.addLine(to: CGPoint(x: gridOrigin.x + CGFloat(cols) * cellWidth, y: y))
+            let y = gridTop - CGFloat(row) * cellHeight
+            context.move(to: CGPoint(x: gridLeft, y: y))
+            context.addLine(to: CGPoint(x: gridLeft + CGFloat(cols) * cellWidth, y: y))
         }
         context.strokePath()
 
         renderCTText(
             "Sheet \(pageIndex + 1)",
             in: context,
-            rect: CGRect(x: margin, y: margin, width: 200, height: cellHeight),
+            rect: CGRect(x: margin, y: gridTop - cellHeight, width: 200, height: cellHeight),
             fontSize: 10,
             bold: false
         )

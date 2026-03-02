@@ -22,13 +22,21 @@ enum SlidePageRenderer {
             let fontSize: CGFloat = box.isTitle ? 28 : 14
             let fontName = box.isTitle ? "Helvetica-Bold" : "Helvetica"
 
+            // PPTX origin is top-left (Y-DOWN). Convert to PDF Y-UP.
+            let pdfFrame = CGRect(
+                x: box.frame.origin.x,
+                y: size.height - box.frame.origin.y - box.frame.height,
+                width: box.frame.width,
+                height: box.frame.height
+            )
+
             let attributes: [CFString: Any] = [
                 kCTFontAttributeName: CTFontCreateWithName(fontName as CFString, fontSize, nil),
                 kCTForegroundColorAttributeName: white
             ]
             let attrStr = CFAttributedStringCreate(nil, text as CFString, attributes as CFDictionary)!
             let framesetter = CTFramesetterCreateWithAttributedString(attrStr)
-            let path = CGPath(rect: box.frame, transform: nil)
+            let path = CGPath(rect: pdfFrame, transform: nil)
             let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, 0), path, nil)
             CTFrameDraw(frame, context)
         }
@@ -42,18 +50,19 @@ enum SlidePageRenderer {
         context.setFillColor(bgColor)
         context.fill(CGRect(origin: .zero, size: size))
 
-        let titleRect = CGRect(x: 60, y: 60, width: size.width - 120, height: 80)
+        // In Y-UP: y is measured from the bottom. Convert from Y-DOWN layout.
+        let titleRect = CGRect(x: 60, y: size.height - 140, width: size.width - 120, height: 80)
         context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.08))
         context.fill(titleRect)
 
-        let contentRect = CGRect(x: 60, y: 160, width: size.width - 120, height: size.height - 220)
+        let contentRect = CGRect(x: 60, y: 60, width: size.width - 120, height: size.height - 220)
         context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.04))
         context.fill(contentRect)
 
         renderCTText(
             "Slide \(pageIndex + 1)",
             in: context,
-            rect: CGRect(x: 60, y: 70, width: 300, height: 50),
+            rect: CGRect(x: 60, y: size.height - 120, width: 300, height: 50),
             fontSize: 28,
             color: CGColor(red: 1, green: 1, blue: 1, alpha: 1)
         )

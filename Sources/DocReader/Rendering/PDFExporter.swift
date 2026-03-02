@@ -45,10 +45,6 @@ enum PDFExporter {
             let pageInfo: [CFString: Any] = [kCGPDFContextMediaBox: boxData]
             context.beginPDFPage(pageInfo as CFDictionary)
 
-            // Flip coordinate system (CG origin is bottom-left)
-            context.translateBy(x: 0, y: size.height)
-            context.scaleBy(x: 1, y: -1)
-
             if let contents = allContents, pageIndex < contents.count {
                 switch contents[pageIndex] {
                 case .word(let wordContent):
