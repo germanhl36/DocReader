@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import CoreText
 
 /// Parses `.docx` files (OOXML Word format).
 actor OOXMLWordParser: DocReadable {
@@ -121,14 +122,22 @@ extension OOXMLWordParser: DocContentProviding {
         try extractor.validateOOXMLStructure()
         let pageSize = try parsePageSize()
 
+        // Parse numbering.xml (optional — not all documents have lists)
+        let numberingParser = OOXMLNumberingParser()
+        if let numData = try? extractor.extractEntry(path: "word/numbering.xml") {
+            let numXml = XMLParser(data: numData)
+            numXml.delegate = numberingParser
+            numXml.parse()
+        }
+
         let docData = try extractor.extractEntry(path: "word/document.xml")
-        let handler = OOXMLDocumentBodyParser()
+        let handler = OOXMLDocumentBodyParser(numbering: numberingParser)
         let xmlParser = XMLParser(data: docData)
         xmlParser.delegate = handler
         xmlParser.parse()
 
         let pages = splitIntoWordPages(
-            paragraphs: handler.paragraphs,
+            elements: handler.elements,
             pageSize: pageSize,
             margins: handler.pageMargins
         )
@@ -138,25 +147,121 @@ extension OOXMLWordParser: DocContentProviding {
 
 // MARK: - Internal helpers (accessible for tests)
 
-/// Splits a flat paragraph array into pages at `__pagebreak__` sentinels.
+/// Splits a flat element array into pages at `.paragraph` with `__pagebreak__` styleName.
 func splitIntoWordPages(
-    paragraphs: [WordParagraphContent],
+    elements: [WordElement],
     pageSize: CGSize,
     margins: WordPageMargins
 ) -> [WordPageContent] {
     var pages: [WordPageContent] = []
-    var current: [WordParagraphContent] = []
+    var current: [WordElement] = []
 
-    for para in paragraphs {
-        if para.styleName == "__pagebreak__" {
-            pages.append(WordPageContent(paragraphs: current, pageSize: pageSize, margins: margins))
+    for element in elements {
+        if case .paragraph(let para) = element, para.styleName == "__pagebreak__" {
+            pages.append(WordPageContent(elements: current, pageSize: pageSize, margins: margins))
             current = []
         } else {
-            current.append(para)
+            current.append(element)
         }
     }
-    pages.append(WordPageContent(paragraphs: current, pageSize: pageSize, margins: margins))
+    pages.append(WordPageContent(elements: current, pageSize: pageSize, margins: margins))
     return pages
+}
+
+// MARK: - Numbering parser (word/numbering.xml)
+
+final class OOXMLNumberingParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    // abstractNumId -> [ilvl -> (format, startVal)]
+    private var abstractNums: [Int: [Int: (format: String, startVal: Int)]] = [:]
+    // numId -> abstractNumId
+    private var nums: [Int: Int] = [:]
+
+    private var currentAbstractNumId: Int?
+    private var currentIlvl: Int?
+    private var currentFormat: String?
+    private var currentStartVal: Int?
+    private var currentNumId: Int?
+    private var currentAbstractNumIdRef: Int?
+
+    func format(numId: Int, ilvl: Int) -> String? {
+        guard let abstractId = nums[numId],
+              let levels = abstractNums[abstractId],
+              let level = levels[ilvl] else { return nil }
+        return level.format
+    }
+
+    func startVal(numId: Int, ilvl: Int) -> Int {
+        guard let abstractId = nums[numId],
+              let levels = abstractNums[abstractId],
+              let level = levels[ilvl] else { return 1 }
+        return level.startVal
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        switch elementName {
+        case "w:abstractNum", "abstractNum":
+            let idStr = attributes["w:abstractNumId"] ?? attributes["abstractNumId"] ?? ""
+            currentAbstractNumId = Int(idStr)
+            currentIlvl = nil
+
+        case "w:lvl", "lvl":
+            let idStr = attributes["w:ilvl"] ?? attributes["ilvl"] ?? ""
+            currentIlvl = Int(idStr)
+            currentFormat = nil
+            currentStartVal = nil
+
+        case "w:numFmt", "numFmt":
+            currentFormat = attributes["w:val"] ?? attributes["val"]
+
+        case "w:start", "start":
+            if let v = Int(attributes["w:val"] ?? attributes["val"] ?? "") {
+                currentStartVal = v
+            }
+
+        case "w:num", "num":
+            let idStr = attributes["w:numId"] ?? attributes["numId"] ?? ""
+            currentNumId = Int(idStr)
+            currentAbstractNumIdRef = nil
+
+        case "w:abstractNumId", "abstractNumId":
+            if let v = Int(attributes["w:val"] ?? attributes["val"] ?? "") {
+                currentAbstractNumIdRef = v
+            }
+
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?) {
+        switch elementName {
+        case "w:lvl", "lvl":
+            if let abstractId = currentAbstractNumId, let ilvl = currentIlvl,
+               let fmt = currentFormat {
+                if abstractNums[abstractId] == nil { abstractNums[abstractId] = [:] }
+                abstractNums[abstractId]![ilvl] = (format: fmt, startVal: currentStartVal ?? 1)
+            }
+            currentIlvl = nil
+            currentFormat = nil
+            currentStartVal = nil
+
+        case "w:abstractNum", "abstractNum":
+            currentAbstractNumId = nil
+
+        case "w:num", "num":
+            if let numId = currentNumId, let abstractId = currentAbstractNumIdRef {
+                nums[numId] = abstractId
+            }
+            currentNumId = nil
+            currentAbstractNumIdRef = nil
+
+        default:
+            break
+        }
+    }
 }
 
 // MARK: - SAX Helpers (private)
@@ -250,16 +355,34 @@ private final class OOXMLCorePropertiesParser: NSObject, XMLParserDelegate, @unc
     }
 }
 
-/// Full SAX parser for word/document.xml — extracts paragraphs with run-level formatting.
-private final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sendable {
-    private(set) var paragraphs: [WordParagraphContent] = []
+/// Full SAX parser for word/document.xml — extracts elements (paragraphs + tables) with formatting.
+final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private(set) var elements: [WordElement] = []
     private(set) var pageMargins = WordPageMargins(top: 72, bottom: 72, left: 72, right: 72)
+
+    private let numbering: OOXMLNumberingParser
+    // List counters: key = "numId-ilvl"
+    private var listCounters: [String: Int] = [:]
+
+    init(numbering: OOXMLNumberingParser) {
+        self.numbering = numbering
+    }
 
     // Paragraph state
     private var inParagraph = false
     private var currentParaStyle = "Normal"
     private var currentParaSpacingAfter: CGFloat = 0
+    private var currentParaSpacingBefore: CGFloat = 0
+    private var currentParaAlignment: CTTextAlignment = .natural
+    private var currentParaLeftIndent: CGFloat = 0
+    private var currentParaFirstLineIndent: CGFloat = 0
+    private var currentParaBackground: String? = nil
     private var currentRuns: [WordRunContent] = []
+
+    // List state (inside w:numPr)
+    private var inNumPr = false
+    private var currentListNumId: Int? = nil
+    private var currentListIlvl: Int = 0
 
     // Run state
     private var inRun = false
@@ -270,15 +393,47 @@ private final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unche
     private var currentRunText = ""
     private var inText = false
 
+    // Table state
+    private var inTable = false
+    private var inRow = false
+    private var inCell = false
+    private var currentTableRows: [WordTableRow] = []
+    private var currentRowCells: [WordTableCell] = []
+    private var currentCellParagraphs: [WordParagraphContent] = []
+
     func parser(_ parser: XMLParser, didStartElement elementName: String,
                 namespaceURI: String?, qualifiedName: String?,
                 attributes: [String: String] = [:]) {
         switch elementName {
+
+        // Table structure
+        case "w:tbl", "tbl":
+            inTable = true
+            currentTableRows = []
+
+        case "w:tr", "tr":
+            guard inTable else { return }
+            inRow = true
+            currentRowCells = []
+
+        case "w:tc", "tc":
+            guard inTable, inRow else { return }
+            inCell = true
+            currentCellParagraphs = []
+
+        // Paragraph
         case "w:p", "p":
             inParagraph = true
             currentParaStyle = "Normal"
             currentParaSpacingAfter = 0
+            currentParaSpacingBefore = 0
+            currentParaAlignment = .natural
+            currentParaLeftIndent = 0
+            currentParaFirstLineIndent = 0
+            currentParaBackground = nil
             currentRuns = []
+            currentListNumId = nil
+            currentListIlvl = 0
 
         case "w:r", "r":
             guard inParagraph else { return }
@@ -289,16 +444,63 @@ private final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unche
             currentRunColor = nil
             currentRunText = ""
 
+        // Paragraph properties
         case "w:pStyle", "pStyle":
             let val = attributes["w:val"] ?? attributes["val"] ?? "Normal"
             currentParaStyle = val
+
+        case "w:jc", "jc":
+            let val = attributes["w:val"] ?? attributes["val"] ?? ""
+            switch val {
+            case "left":       currentParaAlignment = .left
+            case "right":      currentParaAlignment = .right
+            case "center":     currentParaAlignment = .center
+            case "both", "distribute": currentParaAlignment = .justified
+            default:           currentParaAlignment = .natural
+            }
 
         case "w:spacing", "spacing":
             if let afterStr = attributes["w:after"] ?? attributes["after"],
                let afterTwips = Int(afterStr) {
                 currentParaSpacingAfter = CGFloat(afterTwips) / 20.0
             }
+            if let beforeStr = attributes["w:before"] ?? attributes["before"],
+               let beforeTwips = Int(beforeStr) {
+                currentParaSpacingBefore = CGFloat(beforeTwips) / 20.0
+            }
 
+        case "w:ind", "ind":
+            if let leftStr = attributes["w:left"] ?? attributes["left"],
+               let leftTwips = Int(leftStr) {
+                currentParaLeftIndent = CGFloat(leftTwips) / 20.0
+            }
+            if let firstStr = attributes["w:firstLine"] ?? attributes["firstLine"],
+               let firstTwips = Int(firstStr) {
+                currentParaFirstLineIndent = CGFloat(firstTwips) / 20.0
+            }
+
+        case "w:shd", "shd":
+            let fill = attributes["w:fill"] ?? attributes["fill"]
+            if let fill, fill != "auto", fill != "FFFFFF", !fill.isEmpty {
+                currentParaBackground = fill
+            }
+
+        case "w:numPr", "numPr":
+            inNumPr = true
+
+        case "w:ilvl", "ilvl":
+            guard inNumPr else { return }
+            if let v = Int(attributes["w:val"] ?? attributes["val"] ?? "") {
+                currentListIlvl = v
+            }
+
+        case "w:numId", "numId":
+            guard inNumPr else { return }
+            if let v = Int(attributes["w:val"] ?? attributes["val"] ?? "") {
+                currentListNumId = v
+            }
+
+        // Run properties
         case "w:b", "b":
             guard inRun else { return }
             let val = attributes["w:val"] ?? attributes["val"]
@@ -326,22 +528,17 @@ private final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unche
 
         case "w:br", "br":
             let breakType = attributes["w:type"] ?? attributes["type"]
-            guard breakType == "page", inParagraph else { return }
-            // Flush any pending runs into a paragraph before the break
+            guard breakType == "page", inParagraph, !inCell else { return }
+            // Flush pending runs before inserting page break sentinel
             if !currentRuns.isEmpty {
-                paragraphs.append(WordParagraphContent(
-                    runs: currentRuns,
-                    styleName: currentParaStyle,
-                    spacingAfterPt: currentParaSpacingAfter
-                ))
+                elements.append(.paragraph(makeParagraph()))
                 currentRuns = []
             }
-            // Sentinel marks a page boundary
-            paragraphs.append(WordParagraphContent(
+            elements.append(.paragraph(WordParagraphContent(
                 runs: [],
                 styleName: "__pagebreak__",
                 spacingAfterPt: 0
-            ))
+            )))
 
         case "w:pgMar", "pgMar":
             let topTwips    = Int(attributes["w:top"]    ?? attributes["top"]    ?? "1440") ?? 1440
@@ -367,6 +564,29 @@ private final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unche
     func parser(_ parser: XMLParser, didEndElement elementName: String,
                 namespaceURI: String?, qualifiedName: String?) {
         switch elementName {
+
+        case "w:tbl", "tbl":
+            guard inTable else { return }
+            elements.append(.table(WordTableContent(rows: currentTableRows)))
+            currentTableRows = []
+            inTable = false
+
+        case "w:tr", "tr":
+            guard inTable, inRow else { return }
+            let isHeader = currentTableRows.isEmpty
+            currentTableRows.append(WordTableRow(cells: currentRowCells, isHeader: isHeader))
+            currentRowCells = []
+            inRow = false
+
+        case "w:tc", "tc":
+            guard inTable, inCell else { return }
+            currentRowCells.append(WordTableCell(paragraphs: currentCellParagraphs))
+            currentCellParagraphs = []
+            inCell = false
+
+        case "w:numPr", "numPr":
+            inNumPr = false
+
         case "w:t", "t":
             inText = false
 
@@ -386,16 +606,81 @@ private final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unche
         case "w:p", "p":
             guard inParagraph else { return }
             if !currentRuns.isEmpty {
-                paragraphs.append(WordParagraphContent(
-                    runs: currentRuns,
-                    styleName: currentParaStyle,
-                    spacingAfterPt: currentParaSpacingAfter
-                ))
+                let para = makeParagraph()
+                if inCell {
+                    currentCellParagraphs.append(para)
+                } else {
+                    elements.append(.paragraph(para))
+                }
             }
             inParagraph = false
 
         default:
             break
         }
+    }
+
+    // MARK: - Private helpers
+
+    private func makeParagraph() -> WordParagraphContent {
+        let prefix = resolveListPrefix()
+        return WordParagraphContent(
+            runs: currentRuns,
+            styleName: currentParaStyle,
+            spacingAfterPt: currentParaSpacingAfter,
+            alignment: currentParaAlignment,
+            listPrefix: prefix,
+            spacingBeforePt: currentParaSpacingBefore,
+            leftIndentPt: currentParaLeftIndent,
+            firstLineIndentPt: currentParaFirstLineIndent,
+            backgroundHex: currentParaBackground
+        )
+    }
+
+    private func resolveListPrefix() -> String? {
+        guard let numId = currentListNumId else { return nil }
+        let ilvl = currentListIlvl
+        guard let format = numbering.format(numId: numId, ilvl: ilvl) else { return nil }
+
+        let key = "\(numId)-\(ilvl)"
+        let counter = (listCounters[key] ?? (numbering.startVal(numId: numId, ilvl: ilvl) - 1)) + 1
+        listCounters[key] = counter
+
+        switch format {
+        case "bullet":
+            return ilvl == 0 ? "• " : "◦ "
+        case "decimal":
+            return "\(counter). "
+        case "lowerLetter":
+            return "\(letterLabel(counter - 1)). "
+        case "upperLetter":
+            return "\(letterLabel(counter - 1).uppercased()). "
+        case "lowerRoman":
+            return "\(romanNumeral(counter).lowercased()). "
+        case "upperRoman":
+            return "\(romanNumeral(counter)). "
+        default:
+            return "• "
+        }
+    }
+
+    private func letterLabel(_ index: Int) -> String {
+        let letters = Array("abcdefghijklmnopqrstuvwxyz")
+        guard index >= 0 else { return "a" }
+        return String(letters[index % 26])
+    }
+
+    private func romanNumeral(_ n: Int) -> String {
+        let values = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+        let symbols = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
+        var result = ""
+        var remaining = n
+        for (val, sym) in zip(values, symbols) {
+            while remaining >= val {
+                result += sym
+                remaining -= val
+            }
+        }
+        return result.isEmpty ? "I" : result
     }
 }

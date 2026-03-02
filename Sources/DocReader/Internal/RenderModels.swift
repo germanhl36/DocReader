@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import CoreText
 
 // MARK: - Word content models
 
@@ -15,6 +16,30 @@ struct WordParagraphContent: Sendable {
     var runs: [WordRunContent]
     var styleName: String
     var spacingAfterPt: CGFloat
+    var alignment: CTTextAlignment = .natural
+    var listPrefix: String? = nil
+    var spacingBeforePt: CGFloat = 0
+    var leftIndentPt: CGFloat = 0
+    var firstLineIndentPt: CGFloat = 0
+    var backgroundHex: String? = nil
+}
+
+struct WordTableCell: Sendable {
+    var paragraphs: [WordParagraphContent]
+}
+
+struct WordTableRow: Sendable {
+    var cells: [WordTableCell]
+    var isHeader: Bool
+}
+
+struct WordTableContent: Sendable {
+    var rows: [WordTableRow]
+}
+
+enum WordElement: Sendable {
+    case paragraph(WordParagraphContent)
+    case table(WordTableContent)
 }
 
 struct WordPageMargins: Sendable {
@@ -25,7 +50,7 @@ struct WordPageMargins: Sendable {
 }
 
 struct WordPageContent: Sendable {
-    var paragraphs: [WordParagraphContent]
+    var elements: [WordElement]
     var pageSize: CGSize
     var margins: WordPageMargins
 }

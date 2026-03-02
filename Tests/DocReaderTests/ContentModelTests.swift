@@ -21,6 +21,12 @@ final class ContentModelTests: XCTestCase {
         XCTAssertEqual(para.runs.count, 1)
         XCTAssertEqual(para.styleName, "Heading1")
         XCTAssertEqual(para.spacingAfterPt, 6)
+        // New fields have sensible defaults
+        XCTAssertEqual(para.alignment, .natural)
+        XCTAssertNil(para.listPrefix)
+        XCTAssertEqual(para.spacingBeforePt, 0)
+        XCTAssertEqual(para.leftIndentPt, 0)
+        XCTAssertNil(para.backgroundHex)
     }
 
     // MARK: - Column label conversion
@@ -54,42 +60,42 @@ final class ContentModelTests: XCTestCase {
 
     func testPageBreakSplitting() {
         let run = WordRunContent(text: "text", bold: false, italic: false, fontSizePt: 12, hexColor: nil)
-        let paragraphs: [WordParagraphContent] = [
-            WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0),
-            WordParagraphContent(runs: [], styleName: "__pagebreak__", spacingAfterPt: 0),
-            WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0),
+        let elements: [WordElement] = [
+            .paragraph(WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0)),
+            .paragraph(WordParagraphContent(runs: [], styleName: "__pagebreak__", spacingAfterPt: 0)),
+            .paragraph(WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0)),
         ]
         let pages = splitIntoWordPages(
-            paragraphs: paragraphs,
+            elements: elements,
             pageSize: CGSize(width: 612, height: 792),
             margins: WordPageMargins(top: 72, bottom: 72, left: 72, right: 72)
         )
         XCTAssertEqual(pages.count, 2)
-        XCTAssertEqual(pages[0].paragraphs.count, 1)
-        XCTAssertEqual(pages[1].paragraphs.count, 1)
+        XCTAssertEqual(pages[0].elements.count, 1)
+        XCTAssertEqual(pages[1].elements.count, 1)
     }
 
     func testPageBreakSplittingNoBreaks() {
         let run = WordRunContent(text: "text", bold: false, italic: false, fontSizePt: 12, hexColor: nil)
-        let paragraphs: [WordParagraphContent] = [
-            WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0),
-            WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0),
+        let elements: [WordElement] = [
+            .paragraph(WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0)),
+            .paragraph(WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0)),
         ]
         let pages = splitIntoWordPages(
-            paragraphs: paragraphs,
+            elements: elements,
             pageSize: CGSize(width: 612, height: 792),
             margins: WordPageMargins(top: 72, bottom: 72, left: 72, right: 72)
         )
         XCTAssertEqual(pages.count, 1)
-        XCTAssertEqual(pages[0].paragraphs.count, 2)
+        XCTAssertEqual(pages[0].elements.count, 2)
     }
 
     func testPageBreakSplittingMultipleBreaks() {
         let run = WordRunContent(text: "p", bold: false, italic: false, fontSizePt: 12, hexColor: nil)
-        let br  = WordParagraphContent(runs: [], styleName: "__pagebreak__", spacingAfterPt: 0)
-        let pg  = WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0)
+        let br  = WordElement.paragraph(WordParagraphContent(runs: [], styleName: "__pagebreak__", spacingAfterPt: 0))
+        let pg  = WordElement.paragraph(WordParagraphContent(runs: [run], styleName: "Normal", spacingAfterPt: 0))
         let pages = splitIntoWordPages(
-            paragraphs: [pg, br, pg, br, pg],
+            elements: [pg, br, pg, br, pg],
             pageSize: CGSize(width: 612, height: 792),
             margins: WordPageMargins(top: 72, bottom: 72, left: 72, right: 72)
         )

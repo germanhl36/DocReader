@@ -481,6 +481,178 @@ def make_ppt_5slide() -> None:
     print(f"✓ ppt_legacy_5slide.ppt  ({len(data)} bytes)")
 
 
+# ── DOCX with table ────────────────────────────────────────────────────────────
+
+_CONTENT_TYPES_DOCX_NUMBERED = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml"  ContentType="application/xml"/>
+  <Override PartName="/word/document.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/numbering.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+  <Override PartName="/docProps/app.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+  <Override PartName="/docProps/core.xml"
+    ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+</Types>"""
+
+_DOC_RELS_WITH_NUMBERING = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Target="numbering.xml"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering"/>
+</Relationships>"""
+
+_NUMBERING_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="&#x2022;"/>
+    </w:lvl>
+    <w:lvl w:ilvl="1">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="&#x25E6;"/>
+    </w:lvl>
+  </w:abstractNum>
+  <w:abstractNum w:abstractNumId="1">
+    <w:lvl w:ilvl="0">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="decimal"/>
+      <w:lvlText w:val="%1."/>
+    </w:lvl>
+    <w:lvl w:ilvl="1">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="lowerLetter"/>
+      <w:lvlText w:val="%2."/>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1">
+    <w:abstractNumId w:val="0"/>
+  </w:num>
+  <w:num w:numId="2">
+    <w:abstractNumId w:val="1"/>
+  </w:num>
+</w:numbering>"""
+
+
+def _docx_document_table() -> str:
+    ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document {ns}>
+  <w:body>
+    <w:p><w:r><w:t>Document with a 3x3 table:</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Header 1</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Header 2</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Header 3</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Row 1, Col 1</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Row 1, Col 2</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Row 1, Col 3</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Row 2, Col 1</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Row 2, Col 2</w:t></w:r></w:p></w:tc>
+        <w:tc><w:p><w:r><w:t>Row 2, Col 3</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>After the table.</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/>
+    </w:sectPr>
+  </w:body>
+</w:document>"""
+
+
+def make_docx_table() -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml",       _CONTENT_TYPES_DOCX)
+        zf.writestr("_rels/.rels",               _RELS_DOCX)
+        zf.writestr("word/_rels/document.xml.rels", _DOC_RELS)
+        zf.writestr("word/document.xml",         _docx_document_table())
+        zf.writestr("docProps/app.xml",          _app_xml(1))
+        zf.writestr("docProps/core.xml",         _core_xml("Table Test Document"))
+    path = os.path.join(FIXTURES_DIR, "word_table.docx")
+    with open(path, "wb") as f:
+        f.write(buf.getvalue())
+    print(f"✓ word_table.docx  ({len(buf.getvalue())} bytes)")
+
+
+# ── DOCX with bullet + numbered lists ─────────────────────────────────────────
+
+def _docx_document_lists() -> str:
+    ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+    def bullet_para(text, ilvl=0):
+        return f"""<w:p>
+      <w:pPr>
+        <w:numPr>
+          <w:ilvl w:val="{ilvl}"/>
+          <w:numId w:val="1"/>
+        </w:numPr>
+        <w:ind w:left="{720 * (ilvl + 1)}" w:firstLine="0"/>
+      </w:pPr>
+      <w:r><w:t>{text}</w:t></w:r>
+    </w:p>"""
+
+    def numbered_para(text, ilvl=0):
+        return f"""<w:p>
+      <w:pPr>
+        <w:numPr>
+          <w:ilvl w:val="{ilvl}"/>
+          <w:numId w:val="2"/>
+        </w:numPr>
+        <w:ind w:left="{720 * (ilvl + 1)}" w:firstLine="0"/>
+      </w:pPr>
+      <w:r><w:t>{text}</w:t></w:r>
+    </w:p>"""
+
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document {ns}>
+  <w:body>
+    <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Bullet List:</w:t></w:r></w:p>
+    {bullet_para("Apple")}
+    {bullet_para("Banana")}
+    {bullet_para("Cherry (nested)", ilvl=1)}
+    {bullet_para("Date")}
+    <w:p><w:r><w:t xml:space="preserve"> </w:t></w:r></w:p>
+    <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Numbered List:</w:t></w:r></w:p>
+    {numbered_para("First item")}
+    {numbered_para("Second item")}
+    {numbered_para("Sub-item a", ilvl=1)}
+    {numbered_para("Sub-item b", ilvl=1)}
+    {numbered_para("Third item")}
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/>
+    </w:sectPr>
+  </w:body>
+</w:document>"""
+
+
+def make_docx_lists() -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml",          _CONTENT_TYPES_DOCX_NUMBERED)
+        zf.writestr("_rels/.rels",                  _RELS_DOCX)
+        zf.writestr("word/_rels/document.xml.rels", _DOC_RELS_WITH_NUMBERING)
+        zf.writestr("word/document.xml",            _docx_document_lists())
+        zf.writestr("word/numbering.xml",           _NUMBERING_XML)
+        zf.writestr("docProps/app.xml",             _app_xml(1))
+        zf.writestr("docProps/core.xml",            _core_xml("Lists Test Document"))
+    path = os.path.join(FIXTURES_DIR, "word_lists.docx")
+    with open(path, "wb") as f:
+        f.write(buf.getvalue())
+    print(f"✓ word_lists.docx  ({len(buf.getvalue())} bytes)")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -491,11 +663,13 @@ if __name__ == "__main__":
     make_docx("word_10page.docx",  page_count=10, title="Ten-Page Test Document")
     make_xlsx_3sheet()
     make_pptx_5slide()
+    make_docx_table()
+    make_docx_lists()
 
     print("\nGenerating legacy fixtures…")
     make_xls_3sheet()
     make_doc_10page()
     make_ppt_5slide()
 
-    print("\nDone — all 7 fixtures written to:")
+    print("\nDone — all 9 fixtures written to:")
     print(f"  {os.path.abspath(FIXTURES_DIR)}")

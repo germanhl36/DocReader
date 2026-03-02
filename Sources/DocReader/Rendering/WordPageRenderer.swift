@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 import CoreText
 
-/// Renders Word document pages into a CoreGraphics context.
+/// Renders Word document pages into a CoreGraphics context using per-element vertical layout.
 enum WordPageRenderer {
 
     // MARK: - Real content rendering
@@ -20,11 +20,18 @@ enum WordPageRenderer {
             height: content.pageSize.height - m.top - m.bottom
         )
 
-        let cfAttrStr = buildAttributedString(from: content.paragraphs)
-        let framesetter = CTFramesetterCreateWithAttributedString(cfAttrStr)
-        let path = CGPath(rect: contentRect, transform: nil)
-        let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, 0), path, nil)
-        CTFrameDraw(frame, context)
+        // Y-UP: start at the top of the content area
+        var currentY = contentRect.maxY
+
+        for element in content.elements {
+            switch element {
+            case .paragraph(let para):
+                guard para.styleName != "__pagebreak__" else { continue }
+                drawParagraph(para, in: context, contentRect: contentRect, currentY: &currentY)
+            case .table(let table):
+                drawTable(table, in: context, contentRect: contentRect, currentY: &currentY)
+            }
+        }
     }
 
     // MARK: - Placeholder rendering
@@ -65,46 +72,213 @@ enum WordPageRenderer {
         return CGColor(red: r, green: g, blue: b, alpha: 1)
     }
 
-    // MARK: - Private helpers
+    // MARK: - Per-element drawing
 
-    private static func buildAttributedString(from paragraphs: [WordParagraphContent]) -> CFAttributedString {
+    private static func drawParagraph(
+        _ para: WordParagraphContent,
+        in context: CGContext,
+        contentRect: CGRect,
+        currentY: inout CGFloat
+    ) {
+        currentY -= para.spacingBeforePt
+
+        let attrStr = buildSingleParagraphAttrStr(para)
+        let framesetter = CTFramesetterCreateWithAttributedString(attrStr)
+
+        let availWidth = contentRect.width - para.leftIndentPt
+        let maxSize = CGSize(width: availWidth, height: CGFloat.greatestFiniteMagnitude)
+        let fitSize = CTFramesetterSuggestFrameSizeWithConstraints(
+            framesetter, CFRangeMake(0, 0), nil, maxSize, nil)
+
+        let height = max(fitSize.height, 14)
+        currentY -= height
+
+        // Clip elements that overflow below the page
+        guard currentY >= contentRect.minY - height else {
+            currentY -= para.spacingAfterPt
+            return
+        }
+
+        // Draw shading background
+        if let bgHex = para.backgroundHex, let bgColor = resolveColor(bgHex) {
+            let bgRect = CGRect(
+                x: contentRect.minX,
+                y: currentY,
+                width: contentRect.width,
+                height: height
+            )
+            context.setFillColor(bgColor)
+            context.fill(bgRect)
+        }
+
+        // Draw paragraph text
+        let textRect = CGRect(
+            x: contentRect.minX + para.leftIndentPt,
+            y: currentY,
+            width: availWidth,
+            height: height
+        )
+        let path = CGPath(rect: textRect, transform: nil)
+        let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, 0), path, nil)
+        CTFrameDraw(frame, context)
+
+        currentY -= para.spacingAfterPt
+    }
+
+    private static func drawTable(
+        _ table: WordTableContent,
+        in context: CGContext,
+        contentRect: CGRect,
+        currentY: inout CGFloat
+    ) {
+        guard !table.rows.isEmpty else { return }
+        let rowHeight: CGFloat = 20
+        let colCount = table.rows.map { $0.cells.count }.max() ?? 1
+        let colWidth = contentRect.width / CGFloat(colCount)
+        let totalHeight = rowHeight * CGFloat(table.rows.count)
+
+        currentY -= totalHeight
+        guard currentY >= contentRect.minY - totalHeight else {
+            currentY -= 4
+            return
+        }
+
+        var rowY = currentY + totalHeight  // Start at top of table
+
+        for row in table.rows {
+            rowY -= rowHeight
+
+            // Header row background
+            if row.isHeader {
+                let rowRect = CGRect(
+                    x: contentRect.minX, y: rowY,
+                    width: contentRect.width, height: rowHeight)
+                context.setFillColor(CGColor(red: 0.25, green: 0.25, blue: 0.45, alpha: 1))
+                context.fill(rowRect)
+            }
+
+            for (colIdx, cell) in row.cells.enumerated() {
+                let cellRect = CGRect(
+                    x: contentRect.minX + CGFloat(colIdx) * colWidth,
+                    y: rowY,
+                    width: colWidth,
+                    height: rowHeight
+                )
+
+                // Grid lines
+                context.setStrokeColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+                context.setLineWidth(0.5)
+                context.stroke(cellRect)
+
+                // Cell text
+                let text = cell.paragraphs.flatMap { $0.runs }.map { $0.text }.joined(separator: " ")
+                guard !text.isEmpty else { continue }
+                let textColor: CGColor = row.isHeader
+                    ? CGColor(red: 1, green: 1, blue: 1, alpha: 1)
+                    : CGColor(red: 0, green: 0, blue: 0, alpha: 1)
+                renderCTText(text, in: context,
+                             rect: cellRect.insetBy(dx: 2, dy: 2),
+                             fontSize: 9, color: textColor)
+            }
+        }
+
+        currentY -= 4  // Bottom spacing after table
+    }
+
+    // MARK: - Attributed string builders
+
+    private static func buildSingleParagraphAttrStr(_ para: WordParagraphContent) -> CFAttributedString {
         let cfStr = CFAttributedStringCreateMutable(nil, 0)!
         var offset = 0
 
-        for para in paragraphs {
-            guard para.styleName != "__pagebreak__" else { continue }
+        // Prepend list prefix as a virtual run
+        var allRuns = para.runs
+        if let prefix = para.listPrefix, !prefix.isEmpty {
+            let prefixRun = WordRunContent(
+                text: prefix, bold: false, italic: false, fontSizePt: 0, hexColor: nil)
+            allRuns = [prefixRun] + allRuns
+        }
 
-            for run in para.runs {
-                let cfText = run.text as CFString
-                let len = CFStringGetLength(cfText)
-                guard len > 0 else { continue }
+        for run in allRuns {
+            let cfText = run.text as CFString
+            let len = CFStringGetLength(cfText)
+            guard len > 0 else { continue }
 
-                let font = resolveFont(run: run, styleName: para.styleName)
-                let color: CGColor = run.hexColor.flatMap { resolveColor($0) }
-                    ?? CGColor(red: 0, green: 0, blue: 0, alpha: 1)
+            let font = resolveFont(run: run, styleName: para.styleName)
+            let color: CGColor = run.hexColor.flatMap { resolveColor($0) }
+                ?? CGColor(red: 0, green: 0, blue: 0, alpha: 1)
 
-                CFAttributedStringBeginEditing(cfStr)
-                CFAttributedStringReplaceString(cfStr, CFRangeMake(offset, 0), cfText)
-                CFAttributedStringSetAttribute(cfStr, CFRangeMake(offset, len),
-                                               kCTFontAttributeName, font)
-                CFAttributedStringSetAttribute(cfStr, CFRangeMake(offset, len),
-                                               kCTForegroundColorAttributeName, color)
-                CFAttributedStringEndEditing(cfStr)
-                offset += len
-            }
+            CFAttributedStringBeginEditing(cfStr)
+            CFAttributedStringReplaceString(cfStr, CFRangeMake(offset, 0), cfText)
+            CFAttributedStringSetAttribute(cfStr, CFRangeMake(offset, len),
+                                           kCTFontAttributeName, font)
+            CFAttributedStringSetAttribute(cfStr, CFRangeMake(offset, len),
+                                           kCTForegroundColorAttributeName, color)
+            CFAttributedStringEndEditing(cfStr)
+            offset += len
+        }
 
-            // Paragraph newline with default font
+        // Apply paragraph style (alignment, indentation, spacing)
+        if offset > 0 {
+            let paraStyle = buildCTParagraphStyle(para)
+            CFAttributedStringBeginEditing(cfStr)
+            CFAttributedStringSetAttribute(cfStr, CFRangeMake(0, offset),
+                                           kCTParagraphStyleAttributeName, paraStyle)
+            CFAttributedStringEndEditing(cfStr)
+        } else {
+            // Empty paragraph — add a newline so it occupies space
             let nl = "\n" as CFString
             let defaultFont = CTFontCreateWithName("Helvetica" as CFString, 12, nil)
             CFAttributedStringBeginEditing(cfStr)
-            CFAttributedStringReplaceString(cfStr, CFRangeMake(offset, 0), nl)
-            CFAttributedStringSetAttribute(cfStr, CFRangeMake(offset, 1),
+            CFAttributedStringReplaceString(cfStr, CFRangeMake(0, 0), nl)
+            CFAttributedStringSetAttribute(cfStr, CFRangeMake(0, 1),
                                            kCTFontAttributeName, defaultFont)
             CFAttributedStringEndEditing(cfStr)
-            offset += 1
         }
 
         return cfStr
+    }
+
+    private static func buildCTParagraphStyle(_ para: WordParagraphContent) -> CTParagraphStyle {
+        var alignment = para.alignment
+        var headIndent: CGFloat = para.leftIndentPt
+        var firstLineIndent: CGFloat = para.leftIndentPt + para.firstLineIndentPt
+        var paragraphSpacing: CGFloat = para.spacingAfterPt
+        var paragraphSpacingBefore: CGFloat = para.spacingBeforePt
+
+        return withUnsafePointer(to: &alignment) { aPtr in
+            withUnsafePointer(to: &headIndent) { hPtr in
+                withUnsafePointer(to: &firstLineIndent) { fPtr in
+                    withUnsafePointer(to: &paragraphSpacing) { spPtr in
+                        withUnsafePointer(to: &paragraphSpacingBefore) { sbPtr in
+                            let settings: [CTParagraphStyleSetting] = [
+                                CTParagraphStyleSetting(
+                                    spec: .alignment,
+                                    valueSize: MemoryLayout<CTTextAlignment>.size,
+                                    value: UnsafeRawPointer(aPtr)),
+                                CTParagraphStyleSetting(
+                                    spec: .headIndent,
+                                    valueSize: MemoryLayout<CGFloat>.size,
+                                    value: UnsafeRawPointer(hPtr)),
+                                CTParagraphStyleSetting(
+                                    spec: .firstLineHeadIndent,
+                                    valueSize: MemoryLayout<CGFloat>.size,
+                                    value: UnsafeRawPointer(fPtr)),
+                                CTParagraphStyleSetting(
+                                    spec: .paragraphSpacing,
+                                    valueSize: MemoryLayout<CGFloat>.size,
+                                    value: UnsafeRawPointer(spPtr)),
+                                CTParagraphStyleSetting(
+                                    spec: .paragraphSpacingBefore,
+                                    valueSize: MemoryLayout<CGFloat>.size,
+                                    value: UnsafeRawPointer(sbPtr)),
+                            ]
+                            return CTParagraphStyleCreate(settings, settings.count)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private static func resolveFont(run: WordRunContent, styleName: String) -> CTFont {
