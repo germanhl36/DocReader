@@ -260,6 +260,16 @@ enum WordPageRenderer {
                                            kCTFontAttributeName, font)
             CFAttributedStringSetAttribute(cfStr, CFRangeMake(offset, len),
                                            kCTForegroundColorAttributeName, color)
+            if run.underline {
+                let v = NSNumber(value: CTUnderlineStyle.single.rawValue)
+                CFAttributedStringSetAttribute(cfStr, CFRangeMake(offset, len),
+                                               kCTUnderlineStyleAttributeName, v)
+            }
+            if run.strikethrough {
+                let v = NSNumber(value: CTUnderlineStyle.single.rawValue)
+                CFAttributedStringSetAttribute(cfStr, CFRangeMake(offset, len),
+                                               "NSStrikethrough" as CFString, v)
+            }
             CFAttributedStringEndEditing(cfStr)
             offset += len
         }
@@ -333,17 +343,19 @@ enum WordPageRenderer {
         let isItalic = run.italic
         let fontSize = run.fontSizePt > 0 ? run.fontSizePt : (isHeading ? 16 : 12)
 
-        let name: CFString
-        if isBold && isItalic {
-            name = "Helvetica-BoldOblique" as CFString
-        } else if isBold {
-            name = "Helvetica-Bold" as CFString
-        } else if isItalic {
-            name = "Helvetica-Oblique" as CFString
-        } else {
-            name = "Helvetica" as CFString
+        let base = CTFontCreateWithName(
+            (run.fontFamily ?? "Helvetica") as CFString, fontSize, nil)
+
+        if isBold || isItalic {
+            var traits: CTFontSymbolicTraits = []
+            if isBold   { traits.insert(.traitBold) }
+            if isItalic { traits.insert(.traitItalic) }
+            if let styled = CTFontCreateCopyWithSymbolicTraits(
+                    base, fontSize, nil, traits, traits) {
+                return styled
+            }
         }
-        return CTFontCreateWithName(name, fontSize, nil)
+        return base
     }
 
     private static func isDark(_ color: CGColor) -> Bool {

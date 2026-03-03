@@ -193,4 +193,42 @@ final class RichFormattingTests: XCTestCase {
         )
         XCTAssertEqual(para.backgroundHex, "F0F0F0")
     }
+
+    // MARK: - Run decorations and font family
+
+    func testRunUnderlineDefaultFalse() {
+        let run = WordRunContent(text: "t", bold: false, italic: false,
+                                 fontSizePt: 12, hexColor: nil)
+        XCTAssertFalse(run.underline)
+    }
+
+    func testRunUnderlineExplicit() {
+        let run = WordRunContent(text: "t", bold: false, italic: false,
+                                 fontSizePt: 12, hexColor: nil, underline: true)
+        XCTAssertTrue(run.underline)
+    }
+
+    func testRunStrikethroughDefaultFalse() {
+        let run = WordRunContent(text: "t", bold: false, italic: false,
+                                 fontSizePt: 12, hexColor: nil)
+        XCTAssertFalse(run.strikethrough)
+    }
+
+    func testRunStrikethroughExplicit() {
+        let run = WordRunContent(text: "t", bold: false, italic: false,
+                                 fontSizePt: 12, hexColor: nil, strikethrough: true)
+        XCTAssertTrue(run.strikethrough)
+    }
+
+    func testRunFontFamilyDefaultNil() {
+        let run = WordRunContent(text: "t", bold: false, italic: false,
+                                 fontSizePt: 12, hexColor: nil)
+        XCTAssertNil(run.fontFamily)
+    }
+
+    func testRunFontFamilyExplicit() {
+        let run = WordRunContent(text: "t", bold: false, italic: false,
+                                 fontSizePt: 12, hexColor: nil, fontFamily: "Calibri")
+        XCTAssertEqual(run.fontFamily, "Calibri")
+    }
 }

@@ -416,6 +416,9 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
     private var currentRunItalic = false
     private var currentRunFontSize: CGFloat = 12
     private var currentRunColor: String? = nil
+    private var currentRunUnderline = false
+    private var currentRunStrikethrough = false
+    private var currentRunFontFamily: String? = nil
     private var currentRunText = ""
     private var inText = false
 
@@ -475,6 +478,9 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             currentRunItalic = false
             currentRunFontSize = 12
             currentRunColor = nil
+            currentRunUnderline = false
+            currentRunStrikethrough = false
+            currentRunFontFamily = nil
             currentRunText = ""
 
         // Paragraph properties
@@ -564,6 +570,22 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             let val = attributes["w:val"] ?? attributes["val"]
             if val != "auto" { currentRunColor = val }
 
+        case "w:u", "u":
+            guard inRun else { return }
+            let val = attributes["w:val"] ?? attributes["val"] ?? "single"
+            currentRunUnderline = (val != "none")
+
+        case "w:strike", "strike":
+            guard inRun else { return }
+            let val = attributes["w:val"] ?? attributes["val"]
+            currentRunStrikethrough = (val != "0")
+
+        case "w:rFonts", "rFonts":
+            guard inRun else { return }
+            let family = attributes["w:ascii"] ?? attributes["ascii"]
+                      ?? attributes["w:hAnsi"] ?? attributes["hAnsi"]
+            if let f = family, !f.isEmpty { currentRunFontFamily = f }
+
         case "w:t", "t":
             if inRun { inText = true }
 
@@ -646,7 +668,10 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
                     bold: currentRunBold,
                     italic: currentRunItalic,
                     fontSizePt: currentRunFontSize,
-                    hexColor: currentRunColor
+                    hexColor: currentRunColor,
+                    underline: currentRunUnderline,
+                    strikethrough: currentRunStrikethrough,
+                    fontFamily: currentRunFontFamily
                 ))
             }
             inRun = false

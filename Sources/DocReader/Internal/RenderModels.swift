@@ -10,6 +10,9 @@ struct WordRunContent: Sendable {
     var italic: Bool
     var fontSizePt: CGFloat
     var hexColor: String?
+    var underline: Bool = false
+    var strikethrough: Bool = false
+    var fontFamily: String? = nil
 }
 
 struct WordParagraphContent: Sendable {
