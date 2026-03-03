@@ -191,15 +191,6 @@ enum WordPageRenderer {
             let rh = rowHeights[rowIdx]
             rowY -= rh
 
-            // Header row background
-            if row.isHeader {
-                let rowRect = CGRect(
-                    x: contentRect.minX, y: rowY,
-                    width: contentRect.width, height: rh)
-                context.setFillColor(CGColor(red: 0.25, green: 0.25, blue: 0.45, alpha: 1))
-                context.fill(rowRect)
-            }
-
             for (colIdx, cell) in row.cells.enumerated() {
                 let cellRect = CGRect(
                     x: contentRect.minX + CGFloat(colIdx) * colWidth,
@@ -208,15 +199,27 @@ enum WordPageRenderer {
                     height: rh
                 )
 
+                // Cell background — use explicit color, fall back to header default
+                let bgColor: CGColor
+                if let hex = cell.backgroundHex, let c = resolveColor(hex) {
+                    bgColor = c
+                } else if row.isHeader {
+                    bgColor = CGColor(red: 0.25, green: 0.25, blue: 0.45, alpha: 1)
+                } else {
+                    bgColor = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
+                }
+                context.setFillColor(bgColor)
+                context.fill(cellRect)
+
                 // Grid lines
                 context.setStrokeColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
                 context.setLineWidth(0.5)
                 context.stroke(cellRect)
 
-                // Cell text
+                // Cell text — luminance-based color for readability
                 let text = cell.paragraphs.flatMap { $0.runs }.map { $0.text }.joined(separator: " ")
                 guard !text.isEmpty else { continue }
-                let textColor: CGColor = row.isHeader
+                let textColor: CGColor = isDark(bgColor)
                     ? CGColor(red: 1, green: 1, blue: 1, alpha: 1)
                     : CGColor(red: 0, green: 0, blue: 0, alpha: 1)
                 renderCTText(text, in: context,
@@ -341,6 +344,12 @@ enum WordPageRenderer {
             name = "Helvetica" as CFString
         }
         return CTFontCreateWithName(name, fontSize, nil)
+    }
+
+    private static func isDark(_ color: CGColor) -> Bool {
+        guard let comps = color.components, comps.count >= 3 else { return false }
+        let luminance = 0.299 * comps[0] + 0.587 * comps[1] + 0.114 * comps[2]
+        return luminance < 0.5
     }
 
     private static func renderCTText(

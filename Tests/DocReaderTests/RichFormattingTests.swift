@@ -81,6 +81,16 @@ final class RichFormattingTests: XCTestCase {
         XCTAssertEqual(cell.paragraphs[0].runs[0].text, "cell text")
     }
 
+    func testTableCellBackgroundDefaultNil() {
+        let cell = WordTableCell(paragraphs: [])
+        XCTAssertNil(cell.backgroundHex)
+    }
+
+    func testTableCellBackground() {
+        let cell = WordTableCell(paragraphs: [], backgroundHex: "1E3A5F")
+        XCTAssertEqual(cell.backgroundHex, "1E3A5F")
+    }
+
     // MARK: - WordElement enum
 
     func testWordElementParagraphCase() {

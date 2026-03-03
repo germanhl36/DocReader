@@ -26,6 +26,7 @@ struct WordParagraphContent: Sendable {
 
 struct WordTableCell: Sendable {
     var paragraphs: [WordParagraphContent]
+    var backgroundHex: String? = nil
 }
 
 struct WordTableRow: Sendable {

@@ -423,9 +423,11 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
     private var inTable = false
     private var inRow = false
     private var inCell = false
+    private var inTcPr = false
     private var currentTableRows: [WordTableRow] = []
     private var currentRowCells: [WordTableCell] = []
     private var currentCellParagraphs: [WordParagraphContent] = []
+    private var currentCellBackground: String? = nil
 
     func parser(_ parser: XMLParser, didStartElement elementName: String,
                 namespaceURI: String?, qualifiedName: String?,
@@ -446,6 +448,11 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             guard inTable, inRow else { return }
             inCell = true
             currentCellParagraphs = []
+            currentCellBackground = nil
+
+        case "w:tcPr", "tcPr":
+            guard inCell else { return }
+            inTcPr = true
 
         // Paragraph
         case "w:p", "p":
@@ -512,7 +519,10 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             // "solid" pattern: the foreground (w:color) covers the whole area.
             // All other patterns (clear, pct*, etc.): use the background fill (w:fill).
             let bgHex = (val == "solid") ? shdColor : fill
-            if !bgHex.isEmpty && bgHex != "auto" && bgHex.uppercased() != "FFFFFF" {
+            guard !bgHex.isEmpty && bgHex != "auto" && bgHex.uppercased() != "FFFFFF" else { break }
+            if inTcPr {
+                currentCellBackground = bgHex
+            } else {
                 currentParaBackground = bgHex
             }
 
@@ -609,10 +619,17 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             currentRowCells = []
             inRow = false
 
+        case "w:tcPr", "tcPr":
+            inTcPr = false
+
         case "w:tc", "tc":
             guard inTable, inCell else { return }
-            currentRowCells.append(WordTableCell(paragraphs: currentCellParagraphs))
+            currentRowCells.append(WordTableCell(
+                paragraphs: currentCellParagraphs,
+                backgroundHex: currentCellBackground
+            ))
             currentCellParagraphs = []
+            currentCellBackground = nil
             inCell = false
 
         case "w:numPr", "numPr":
