@@ -60,6 +60,46 @@ enum WordPageRenderer {
         )
     }
 
+    // MARK: - Height measurement (used by splitIntoWordPages for page reflow)
+
+    /// Returns the vertical height an element will occupy on a page, for layout purposes.
+    static func measureElement(_ element: WordElement, availableWidth: CGFloat) -> CGFloat {
+        switch element {
+        case .paragraph(let para):
+            guard para.styleName != "__pagebreak__" else { return 0 }
+            let attrStr = buildSingleParagraphAttrStr(para)
+            let framesetter = CTFramesetterCreateWithAttributedString(attrStr)
+            let availW = max(availableWidth - para.leftIndentPt, 1)
+            let maxSize = CGSize(width: availW, height: .greatestFiniteMagnitude)
+            let fitSize = CTFramesetterSuggestFrameSizeWithConstraints(
+                framesetter, CFRangeMake(0, 0), nil, maxSize, nil)
+            return para.spacingBeforePt + max(fitSize.height, 14) + para.spacingAfterPt
+        case .table(let table):
+            guard !table.rows.isEmpty else { return 0 }
+            let colCount = table.rows.map { $0.cells.count }.max() ?? 1
+            let colWidth = colCount > 0 ? availableWidth / CGFloat(colCount) : availableWidth
+            return table.rows.reduce(0) { $0 + rowHeight(for: $1, colWidth: colWidth) } + 4
+        }
+    }
+
+    /// Measures the height of a single table row based on its cell content.
+    static func rowHeight(for row: WordTableRow, colWidth: CGFloat) -> CGFloat {
+        let minHeight: CGFloat = 20
+        let maxCellHeight = row.cells.compactMap { cell -> CGFloat? in
+            let text = cell.paragraphs.flatMap { $0.runs }.map { $0.text }.joined(separator: " ")
+            guard !text.isEmpty else { return nil }
+            let font = CTFontCreateWithName("Helvetica" as CFString, 9, nil)
+            let attrs: [CFString: Any] = [kCTFontAttributeName: font]
+            let attrStr = CFAttributedStringCreate(nil, text as CFString, attrs as CFDictionary)!
+            let framesetter = CTFramesetterCreateWithAttributedString(attrStr)
+            let maxSize = CGSize(width: max(colWidth - 4, 1), height: .greatestFiniteMagnitude)
+            let fit = CTFramesetterSuggestFrameSizeWithConstraints(
+                framesetter, CFRangeMake(0, 0), nil, maxSize, nil)
+            return fit.height + 4
+        }.max() ?? minHeight
+        return max(maxCellHeight, minHeight)
+    }
+
     // MARK: - Internal helpers (accessible for tests)
 
     /// Resolves a 6-character hex color string to a CGColor, or nil if invalid.
@@ -132,10 +172,12 @@ enum WordPageRenderer {
         currentY: inout CGFloat
     ) {
         guard !table.rows.isEmpty else { return }
-        let rowHeight: CGFloat = 20
         let colCount = table.rows.map { $0.cells.count }.max() ?? 1
         let colWidth = contentRect.width / CGFloat(colCount)
-        let totalHeight = rowHeight * CGFloat(table.rows.count)
+
+        // Compute per-row heights dynamically so cell text is never truncated
+        let rowHeights = table.rows.map { rowHeight(for: $0, colWidth: colWidth) }
+        let totalHeight = rowHeights.reduce(0, +)
 
         currentY -= totalHeight
         guard currentY >= contentRect.minY - totalHeight else {
@@ -145,14 +187,15 @@ enum WordPageRenderer {
 
         var rowY = currentY + totalHeight  // Start at top of table
 
-        for row in table.rows {
-            rowY -= rowHeight
+        for (rowIdx, row) in table.rows.enumerated() {
+            let rh = rowHeights[rowIdx]
+            rowY -= rh
 
             // Header row background
             if row.isHeader {
                 let rowRect = CGRect(
                     x: contentRect.minX, y: rowY,
-                    width: contentRect.width, height: rowHeight)
+                    width: contentRect.width, height: rh)
                 context.setFillColor(CGColor(red: 0.25, green: 0.25, blue: 0.45, alpha: 1))
                 context.fill(rowRect)
             }
@@ -162,7 +205,7 @@ enum WordPageRenderer {
                     x: contentRect.minX + CGFloat(colIdx) * colWidth,
                     y: rowY,
                     width: colWidth,
-                    height: rowHeight
+                    height: rh
                 )
 
                 // Grid lines

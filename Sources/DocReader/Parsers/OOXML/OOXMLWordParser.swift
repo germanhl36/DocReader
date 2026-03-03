@@ -13,6 +13,7 @@ actor OOXMLWordParser: DocReadable {
     private var _pageCount: Int?
     private var _pageSize: CGSize?
     private var _metadata: DocumentMetadata?
+    private var _pageContents: [PageContent]?
 
     init(url: URL) {
         self.url = url
@@ -47,9 +48,12 @@ actor OOXMLWordParser: DocReadable {
     }
 
     func exportPDF() async throws -> Data {
-        let count = try pageCount
-        guard count > 0 else { throw DocReaderError.corruptedFile }
-        return try await exportPDF(pages: 0...(count - 1))
+        // Build content first to get the actual reflowed page count, which may exceed the
+        // value recorded in docProps/app.xml when overflow reflow creates additional pages.
+        let contents = try buildPageContents()
+        guard !contents.isEmpty else { throw DocReaderError.corruptedFile }
+        let pageSize = try parsePageSize()
+        return try await PDFExporter.exportContents(contents, pageSize: pageSize)
     }
 
     func exportPDF(pages: ClosedRange<Int>) async throws -> Data {
@@ -119,6 +123,7 @@ actor OOXMLWordParser: DocReadable {
 
 extension OOXMLWordParser: DocContentProviding {
     func buildPageContents() throws -> [PageContent] {
+        if let cached = _pageContents { return cached }
         try extractor.validateOOXMLStructure()
         let pageSize = try parsePageSize()
 
@@ -141,29 +146,50 @@ extension OOXMLWordParser: DocContentProviding {
             pageSize: pageSize,
             margins: handler.pageMargins
         )
-        return pages.map { .word($0) }
+        let result = pages.map { PageContent.word($0) }
+        _pageContents = result
+        return result
     }
 }
 
 // MARK: - Internal helpers (accessible for tests)
 
-/// Splits a flat element array into pages at `.paragraph` with `__pagebreak__` styleName.
+/// Splits a flat element array into pages, honouring explicit `__pagebreak__` sentinels and
+/// automatically starting a new page when content overflows the available vertical space.
 func splitIntoWordPages(
     elements: [WordElement],
     pageSize: CGSize,
     margins: WordPageMargins
 ) -> [WordPageContent] {
+    let contentHeight = pageSize.height - margins.top - margins.bottom
+    let contentWidth  = pageSize.width  - margins.left - margins.right
+
     var pages: [WordPageContent] = []
     var current: [WordElement] = []
+    var remainingY: CGFloat = contentHeight
 
     for element in elements {
+        // Explicit page break — flush and start a new page
         if case .paragraph(let para) = element, para.styleName == "__pagebreak__" {
             pages.append(WordPageContent(elements: current, pageSize: pageSize, margins: margins))
             current = []
-        } else {
-            current.append(element)
+            remainingY = contentHeight
+            continue
         }
+
+        let elementHeight = WordPageRenderer.measureElement(element, availableWidth: contentWidth)
+
+        // Overflow — start a new page before adding this element
+        if !current.isEmpty && elementHeight > 0 && remainingY - elementHeight < 0 {
+            pages.append(WordPageContent(elements: current, pageSize: pageSize, margins: margins))
+            current = []
+            remainingY = contentHeight
+        }
+
+        current.append(element)
+        remainingY -= elementHeight
     }
+
     pages.append(WordPageContent(elements: current, pageSize: pageSize, margins: margins))
     return pages
 }
@@ -480,9 +506,14 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             }
 
         case "w:shd", "shd":
-            let fill = attributes["w:fill"] ?? attributes["fill"]
-            if let fill, fill != "auto", fill != "FFFFFF", !fill.isEmpty {
-                currentParaBackground = fill
+            let val  = attributes["w:val"]   ?? attributes["val"]   ?? ""
+            let fill = attributes["w:fill"]  ?? attributes["fill"]  ?? ""
+            let shdColor = attributes["w:color"] ?? attributes["color"] ?? ""
+            // "solid" pattern: the foreground (w:color) covers the whole area.
+            // All other patterns (clear, pct*, etc.): use the background fill (w:fill).
+            let bgHex = (val == "solid") ? shdColor : fill
+            if !bgHex.isEmpty && bgHex != "auto" && bgHex.uppercased() != "FFFFFF" {
+                currentParaBackground = bgHex
             }
 
         case "w:numPr", "numPr":

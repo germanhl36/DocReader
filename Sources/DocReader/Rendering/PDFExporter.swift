@@ -71,4 +71,48 @@ enum PDFExporter {
         context.closePDF()
         return pdfData as Data
     }
+
+    /// Exports a pre-built array of page contents directly, without range validation.
+    ///
+    /// Used by ``OOXMLWordParser/exportPDF()`` so that page-reflow content (which may
+    /// produce more pages than `pageCount` from `docProps/app.xml`) is fully rendered.
+    @DocRenderActor
+    static func exportContents(
+        _ contents: [PageContent],
+        pageSize: CGSize
+    ) async throws -> Data {
+        guard !contents.isEmpty else { throw DocReaderError.corruptedFile }
+
+        var mediaBox = CGRect(origin: .zero, size: pageSize)
+        let pdfData = NSMutableData()
+        guard let consumer = CGDataConsumer(data: pdfData),
+              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw DocReaderError.internalError("Failed to create PDF context")
+        }
+
+        for (pageIndex, pageContent) in contents.enumerated() {
+            try Task.checkCancellation()
+
+            var pageRect = CGRect(origin: .zero, size: pageSize)
+            let boxData = NSData(bytes: &pageRect, length: MemoryLayout<CGRect>.size)
+            let pageInfo: [CFString: Any] = [kCGPDFContextMediaBox: boxData]
+            context.beginPDFPage(pageInfo as CFDictionary)
+
+            switch pageContent {
+            case .word(let wordContent):
+                WordPageRenderer.render(in: context, content: wordContent)
+            case .sheet(let sheetContent):
+                SheetPageRenderer.render(in: context, size: pageSize, content: sheetContent)
+            case .slide(let slideContent):
+                SlidePageRenderer.render(in: context, size: pageSize, content: slideContent)
+            }
+
+            _ = pageIndex  // suppress unused-variable warning
+
+            context.endPDFPage()
+        }
+
+        context.closePDF()
+        return pdfData as Data
+    }
 }
