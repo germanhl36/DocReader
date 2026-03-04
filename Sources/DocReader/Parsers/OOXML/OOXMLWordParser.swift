@@ -204,9 +204,17 @@ func splitIntoWordPages(
 
 // MARK: - Numbering parser (word/numbering.xml)
 
+private struct NumberingLevel {
+    var format: String
+    var startVal: Int
+    var lvlText: String?
+    var leftIndentPt: CGFloat?
+    var hangingIndentPt: CGFloat?
+}
+
 final class OOXMLNumberingParser: NSObject, XMLParserDelegate, @unchecked Sendable {
-    // abstractNumId -> [ilvl -> (format, startVal)]
-    private var abstractNums: [Int: [Int: (format: String, startVal: Int)]] = [:]
+    // abstractNumId -> [ilvl -> NumberingLevel]
+    private var abstractNums: [Int: [Int: NumberingLevel]] = [:]
     // numId -> abstractNumId
     private var nums: [Int: Int] = [:]
 
@@ -214,21 +222,38 @@ final class OOXMLNumberingParser: NSObject, XMLParserDelegate, @unchecked Sendab
     private var currentIlvl: Int?
     private var currentFormat: String?
     private var currentStartVal: Int?
+    private var currentLvlText: String?
+    private var currentLeftIndentPt: CGFloat?
+    private var currentHangingIndentPt: CGFloat?
     private var currentNumId: Int?
     private var currentAbstractNumIdRef: Int?
+    private var inLvl = false
+    private var inLvlPPr = false
 
     func format(numId: Int, ilvl: Int) -> String? {
-        guard let abstractId = nums[numId],
-              let levels = abstractNums[abstractId],
-              let level = levels[ilvl] else { return nil }
-        return level.format
+        level(numId: numId, ilvl: ilvl)?.format
     }
 
     func startVal(numId: Int, ilvl: Int) -> Int {
+        level(numId: numId, ilvl: ilvl)?.startVal ?? 1
+    }
+
+    func lvlText(numId: Int, ilvl: Int) -> String? {
+        level(numId: numId, ilvl: ilvl)?.lvlText
+    }
+
+    func leftIndent(numId: Int, ilvl: Int) -> CGFloat? {
+        level(numId: numId, ilvl: ilvl)?.leftIndentPt
+    }
+
+    func hangingIndent(numId: Int, ilvl: Int) -> CGFloat? {
+        level(numId: numId, ilvl: ilvl)?.hangingIndentPt
+    }
+
+    private func level(numId: Int, ilvl: Int) -> NumberingLevel? {
         guard let abstractId = nums[numId],
-              let levels = abstractNums[abstractId],
-              let level = levels[ilvl] else { return 1 }
-        return level.startVal
+              let levels = abstractNums[abstractId] else { return nil }
+        return levels[ilvl]
     }
 
     func parser(_ parser: XMLParser, didStartElement elementName: String,
@@ -245,6 +270,10 @@ final class OOXMLNumberingParser: NSObject, XMLParserDelegate, @unchecked Sendab
             currentIlvl = Int(idStr)
             currentFormat = nil
             currentStartVal = nil
+            currentLvlText = nil
+            currentLeftIndentPt = nil
+            currentHangingIndentPt = nil
+            inLvl = true
 
         case "w:numFmt", "numFmt":
             currentFormat = attributes["w:val"] ?? attributes["val"]
@@ -252,6 +281,24 @@ final class OOXMLNumberingParser: NSObject, XMLParserDelegate, @unchecked Sendab
         case "w:start", "start":
             if let v = Int(attributes["w:val"] ?? attributes["val"] ?? "") {
                 currentStartVal = v
+            }
+
+        case "w:lvlText", "lvlText":
+            guard inLvl else { break }
+            currentLvlText = attributes["w:val"] ?? attributes["val"]
+
+        case "w:pPr", "pPr":
+            if inLvl { inLvlPPr = true }
+
+        case "w:ind", "ind":
+            guard inLvlPPr else { break }
+            if let leftStr = attributes["w:left"] ?? attributes["left"],
+               let leftTwips = Int(leftStr) {
+                currentLeftIndentPt = CGFloat(leftTwips) / 20.0
+            }
+            if let hangStr = attributes["w:hanging"] ?? attributes["hanging"],
+               let hangTwips = Int(hangStr) {
+                currentHangingIndentPt = CGFloat(hangTwips) / 20.0
             }
 
         case "w:num", "num":
@@ -276,11 +323,24 @@ final class OOXMLNumberingParser: NSObject, XMLParserDelegate, @unchecked Sendab
             if let abstractId = currentAbstractNumId, let ilvl = currentIlvl,
                let fmt = currentFormat {
                 if abstractNums[abstractId] == nil { abstractNums[abstractId] = [:] }
-                abstractNums[abstractId]![ilvl] = (format: fmt, startVal: currentStartVal ?? 1)
+                abstractNums[abstractId]![ilvl] = NumberingLevel(
+                    format: fmt,
+                    startVal: currentStartVal ?? 1,
+                    lvlText: currentLvlText,
+                    leftIndentPt: currentLeftIndentPt,
+                    hangingIndentPt: currentHangingIndentPt
+                )
             }
             currentIlvl = nil
             currentFormat = nil
             currentStartVal = nil
+            currentLvlText = nil
+            currentLeftIndentPt = nil
+            currentHangingIndentPt = nil
+            inLvl = false
+
+        case "w:pPr", "pPr":
+            inLvlPPr = false
 
         case "w:abstractNum", "abstractNum":
             currentAbstractNumId = nil
@@ -934,6 +994,19 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
 
     private func makeParagraph() -> WordParagraphContent {
         let prefix = resolveListPrefix()
+        var leftIndent = currentParaLeftIndent
+        var firstLineIndent = currentParaFirstLineIndent
+        // Apply numbering-level indent when paragraph has numPr but no inline w:ind
+        if let numId = currentListNumId, leftIndent == 0 {
+            let ilvl = currentListIlvl
+            if let lvlLeft = numbering.leftIndent(numId: numId, ilvl: ilvl) {
+                leftIndent = lvlLeft
+            }
+            if let lvlHang = numbering.hangingIndent(numId: numId, ilvl: ilvl),
+               firstLineIndent == 0 {
+                firstLineIndent = -lvlHang
+            }
+        }
         return WordParagraphContent(
             runs: currentRuns,
             styleName: currentParaStyle,
@@ -941,8 +1014,8 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             alignment: currentParaAlignment,
             listPrefix: prefix,
             spacingBeforePt: currentParaSpacingBefore,
-            leftIndentPt: currentParaLeftIndent,
-            firstLineIndentPt: currentParaFirstLineIndent,
+            leftIndentPt: leftIndent,
+            firstLineIndentPt: firstLineIndent,
             backgroundHex: currentParaBackground,
             borderTopHex: currentParaBorderTopHex,
             borderTopWidthPt: currentParaBorderTopWidth,
@@ -962,7 +1035,8 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
 
         switch format {
         case "bullet":
-            return ilvl == 0 ? "• " : "◦ "
+            let char = numbering.lvlText(numId: numId, ilvl: ilvl) ?? (ilvl == 0 ? "•" : "◦")
+            return char + " "
         case "decimal":
             return "\(counter). "
         case "lowerLetter":

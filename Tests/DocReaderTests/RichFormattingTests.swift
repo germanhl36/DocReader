@@ -39,9 +39,31 @@ final class RichFormattingTests: XCTestCase {
             runs: [],
             styleName: "Normal",
             spacingAfterPt: 0,
-            listPrefix: "• "
+            listPrefix: "● "
         )
-        XCTAssertEqual(para.listPrefix, "• ")
+        XCTAssertEqual(para.listPrefix, "● ")
+    }
+
+    func testListPrefixCustomBulletChar() {
+        let para = WordParagraphContent(
+            runs: [],
+            styleName: "ListParagraph",
+            spacingAfterPt: 0,
+            listPrefix: "■ "
+        )
+        XCTAssertEqual(para.listPrefix, "■ ")
+    }
+
+    func testListIndentFromNumPr() {
+        let para = WordParagraphContent(
+            runs: [],
+            styleName: "ListParagraph",
+            spacingAfterPt: 0,
+            leftIndentPt: 36,
+            firstLineIndentPt: -18
+        )
+        XCTAssertEqual(para.leftIndentPt, 36)
+        XCTAssertEqual(para.firstLineIndentPt, -18)
     }
 
     func testListPrefixNumbered() {
