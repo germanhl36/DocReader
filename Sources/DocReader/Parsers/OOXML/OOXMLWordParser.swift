@@ -127,6 +127,14 @@ extension OOXMLWordParser: DocContentProviding {
         try extractor.validateOOXMLStructure()
         let pageSize = try parsePageSize()
 
+        // Parse styles.xml (optional — provides default font/size/heading styles)
+        let stylesParser = OOXMLStylesParser()
+        if let stylesData = try? extractor.extractEntry(path: "word/styles.xml") {
+            let stylesXml = XMLParser(data: stylesData)
+            stylesXml.delegate = stylesParser
+            stylesXml.parse()
+        }
+
         // Parse numbering.xml (optional — not all documents have lists)
         let numberingParser = OOXMLNumberingParser()
         if let numData = try? extractor.extractEntry(path: "word/numbering.xml") {
@@ -136,7 +144,7 @@ extension OOXMLWordParser: DocContentProviding {
         }
 
         let docData = try extractor.extractEntry(path: "word/document.xml")
-        let handler = OOXMLDocumentBodyParser(numbering: numberingParser)
+        let handler = OOXMLDocumentBodyParser(numbering: numberingParser, styles: stylesParser)
         let xmlParser = XMLParser(data: docData)
         xmlParser.delegate = handler
         xmlParser.parse()
@@ -290,6 +298,103 @@ final class OOXMLNumberingParser: NSObject, XMLParserDelegate, @unchecked Sendab
     }
 }
 
+// MARK: - Styles parser (word/styles.xml)
+
+struct WordStyleDefaults {
+    var fontFamily: String? = nil
+    var fontSizePt: CGFloat? = nil
+    var bold: Bool = false
+    var italic: Bool = false
+    var color: String? = nil
+    var spacingBeforePt: CGFloat? = nil
+    var spacingAfterPt: CGFloat? = nil
+}
+
+final class OOXMLStylesParser: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private(set) var defaultFontFamily = "Arial"
+    private(set) var defaultFontSizePt: CGFloat = 10
+    private var styles: [String: WordStyleDefaults] = [:]
+
+    private var inDocDefaults = false
+    private var inRPrDefault = false
+    private var currentStyleId: String?
+    private var inStyleRPr = false
+    private var inStylePPr = false
+    private var current = WordStyleDefaults()
+    private var currentSpacingBefore: CGFloat?
+    private var currentSpacingAfter: CGFloat?
+
+    func resolve(styleId: String) -> WordStyleDefaults? { styles[styleId] }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        switch elementName {
+        case "w:docDefaults", "docDefaults":
+            inDocDefaults = true
+        case "w:rPrDefault", "rPrDefault":
+            if inDocDefaults { inRPrDefault = true }
+        case "w:style", "style":
+            currentStyleId = attributes["w:styleId"] ?? attributes["styleId"]
+            current = WordStyleDefaults()
+            currentSpacingBefore = nil; currentSpacingAfter = nil
+            inStyleRPr = false; inStylePPr = false
+        case "w:pPr", "pPr":
+            if currentStyleId != nil { inStylePPr = true }
+        case "w:rPr", "rPr":
+            if currentStyleId != nil { inStyleRPr = true }
+        case "w:rFonts", "rFonts":
+            let family = attributes["w:ascii"] ?? attributes["ascii"]
+                      ?? attributes["w:hAnsi"] ?? attributes["hAnsi"]
+            guard let f = family, !f.isEmpty else { break }
+            if inDocDefaults && inRPrDefault { defaultFontFamily = f }
+            else if inStyleRPr { current.fontFamily = f }
+        case "w:sz", "sz":
+            guard let v = Int(attributes["w:val"] ?? attributes["val"] ?? "") else { break }
+            let pt = CGFloat(v) / 2.0
+            if inDocDefaults && inRPrDefault { defaultFontSizePt = pt }
+            else if inStyleRPr { current.fontSizePt = pt }
+        case "w:b", "b":
+            guard inStyleRPr else { break }
+            current.bold = (attributes["w:val"] ?? attributes["val"]) != "0"
+        case "w:i", "i":
+            guard inStyleRPr else { break }
+            current.italic = (attributes["w:val"] ?? attributes["val"]) != "0"
+        case "w:color", "color":
+            guard inStyleRPr else { break }
+            let val = attributes["w:val"] ?? attributes["val"] ?? ""
+            if val != "auto" && !val.isEmpty { current.color = val }
+        case "w:spacing", "spacing":
+            guard inStylePPr else { break }
+            if let v = Int(attributes["w:before"] ?? attributes["before"] ?? "") {
+                currentSpacingBefore = CGFloat(v) / 20.0
+            }
+            if let v = Int(attributes["w:after"] ?? attributes["after"] ?? "") {
+                currentSpacingAfter = CGFloat(v) / 20.0
+            }
+        default: break
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?) {
+        switch elementName {
+        case "w:docDefaults", "docDefaults": inDocDefaults = false
+        case "w:rPrDefault", "rPrDefault":   inRPrDefault = false
+        case "w:pPr", "pPr":                 inStylePPr = false
+        case "w:rPr", "rPr":                 inStyleRPr = false
+        case "w:style", "style":
+            if let id = currentStyleId {
+                current.spacingBeforePt = currentSpacingBefore
+                current.spacingAfterPt  = currentSpacingAfter
+                styles[id] = current
+            }
+            currentStyleId = nil
+        default: break
+        }
+    }
+}
+
 // MARK: - SAX Helpers (private)
 
 private final class OOXMLAppPropertiesParser: NSObject, XMLParserDelegate, @unchecked Sendable {
@@ -387,14 +492,15 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
     private(set) var pageMargins = WordPageMargins(top: 72, bottom: 72, left: 72, right: 72)
 
     private let numbering: OOXMLNumberingParser
-    // List counters: key = "numId-ilvl"
+    private let styles: OOXMLStylesParser
     private var listCounters: [String: Int] = [:]
 
-    init(numbering: OOXMLNumberingParser) {
+    init(numbering: OOXMLNumberingParser, styles: OOXMLStylesParser) {
         self.numbering = numbering
+        self.styles = styles
     }
 
-    // Paragraph state
+    // MARK: - Paragraph state
     private var inParagraph = false
     private var currentParaStyle = "Normal"
     private var currentParaSpacingAfter: CGFloat = 0
@@ -403,18 +509,23 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
     private var currentParaLeftIndent: CGFloat = 0
     private var currentParaFirstLineIndent: CGFloat = 0
     private var currentParaBackground: String? = nil
+    private var currentParaBorderTopHex: String? = nil
+    private var currentParaBorderTopWidth: CGFloat = 0
+    private var currentParaBorderBottomHex: String? = nil
+    private var currentParaBorderBottomWidth: CGFloat = 0
     private var currentRuns: [WordRunContent] = []
+    private var inPBdr = false
 
-    // List state (inside w:numPr)
+    // MARK: - List state
     private var inNumPr = false
     private var currentListNumId: Int? = nil
     private var currentListIlvl: Int = 0
 
-    // Run state
+    // MARK: - Run state
     private var inRun = false
     private var currentRunBold = false
     private var currentRunItalic = false
-    private var currentRunFontSize: CGFloat = 12
+    private var currentRunFontSize: CGFloat = 10
     private var currentRunColor: String? = nil
     private var currentRunUnderline = false
     private var currentRunStrikethrough = false
@@ -422,15 +533,26 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
     private var currentRunText = ""
     private var inText = false
 
-    // Table state
+    // MARK: - Table state
     private var inTable = false
     private var inRow = false
     private var inCell = false
     private var inTcPr = false
+    private var inTcMar = false
+    private var inTcBorders = false
+    private var inTblGrid = false
     private var currentTableRows: [WordTableRow] = []
     private var currentRowCells: [WordTableCell] = []
     private var currentCellParagraphs: [WordParagraphContent] = []
     private var currentCellBackground: String? = nil
+    private var currentCellBorderColorHex: String? = nil
+    private var currentCellMarginTop: CGFloat? = nil
+    private var currentCellMarginBottom: CGFloat? = nil
+    private var currentCellMarginLeft: CGFloat? = nil
+    private var currentCellMarginRight: CGFloat? = nil
+    private var currentTableColWidths: [CGFloat] = []
+
+    // MARK: - didStartElement
 
     func parser(_ parser: XMLParser, didStartElement elementName: String,
                 namespaceURI: String?, qualifiedName: String?,
@@ -441,6 +563,16 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
         case "w:tbl", "tbl":
             inTable = true
             currentTableRows = []
+            currentTableColWidths = []
+
+        case "w:tblGrid", "tblGrid":
+            inTblGrid = true
+
+        case "w:gridCol", "gridCol":
+            guard inTblGrid else { return }
+            if let wStr = attributes["w:w"] ?? attributes["w"], let twips = Int(wStr) {
+                currentTableColWidths.append(CGFloat(twips) / 20.0)
+            }
 
         case "w:tr", "tr":
             guard inTable else { return }
@@ -452,10 +584,23 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             inCell = true
             currentCellParagraphs = []
             currentCellBackground = nil
+            currentCellBorderColorHex = nil
+            currentCellMarginTop = nil
+            currentCellMarginBottom = nil
+            currentCellMarginLeft = nil
+            currentCellMarginRight = nil
 
         case "w:tcPr", "tcPr":
             guard inCell else { return }
             inTcPr = true
+
+        case "w:tcMar", "tcMar":
+            guard inTcPr else { return }
+            inTcMar = true
+
+        case "w:tcBorders", "tcBorders":
+            guard inTcPr else { return }
+            inTcBorders = true
 
         // Paragraph
         case "w:p", "p":
@@ -467,26 +612,38 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             currentParaLeftIndent = 0
             currentParaFirstLineIndent = 0
             currentParaBackground = nil
+            currentParaBorderTopHex = nil
+            currentParaBorderTopWidth = 0
+            currentParaBorderBottomHex = nil
+            currentParaBorderBottomWidth = 0
             currentRuns = []
             currentListNumId = nil
             currentListIlvl = 0
 
+        case "w:pBdr", "pBdr":
+            inPBdr = true
+
         case "w:r", "r":
             guard inParagraph else { return }
             inRun = true
-            currentRunBold = false
-            currentRunItalic = false
-            currentRunFontSize = 12
-            currentRunColor = nil
+            let sd = styles.resolve(styleId: currentParaStyle)
+            currentRunBold = sd?.bold ?? false
+            currentRunItalic = sd?.italic ?? false
+            currentRunFontSize = sd?.fontSizePt ?? styles.defaultFontSizePt
+            currentRunColor = sd?.color
+            currentRunFontFamily = sd?.fontFamily ?? styles.defaultFontFamily
             currentRunUnderline = false
             currentRunStrikethrough = false
-            currentRunFontFamily = nil
             currentRunText = ""
 
         // Paragraph properties
         case "w:pStyle", "pStyle":
             let val = attributes["w:val"] ?? attributes["val"] ?? "Normal"
             currentParaStyle = val
+            if let sd = styles.resolve(styleId: val) {
+                if let before = sd.spacingBeforePt { currentParaSpacingBefore = before }
+                if let after  = sd.spacingAfterPt  { currentParaSpacingAfter  = after  }
+            }
 
         case "w:jc", "jc":
             let val = attributes["w:val"] ?? attributes["val"] ?? ""
@@ -517,13 +674,15 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
                let firstTwips = Int(firstStr) {
                 currentParaFirstLineIndent = CGFloat(firstTwips) / 20.0
             }
+            if let hangStr = attributes["w:hanging"] ?? attributes["hanging"],
+               let hangTwips = Int(hangStr) {
+                currentParaFirstLineIndent = -CGFloat(hangTwips) / 20.0
+            }
 
         case "w:shd", "shd":
             let val  = attributes["w:val"]   ?? attributes["val"]   ?? ""
             let fill = attributes["w:fill"]  ?? attributes["fill"]  ?? ""
             let shdColor = attributes["w:color"] ?? attributes["color"] ?? ""
-            // "solid" pattern: the foreground (w:color) covers the whole area.
-            // All other patterns (clear, pct*, etc.): use the background fill (w:fill).
             let bgHex = (val == "solid") ? shdColor : fill
             guard !bgHex.isEmpty && bgHex != "auto" && bgHex.uppercased() != "FFFFFF" else { break }
             if inTcPr {
@@ -545,6 +704,57 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             guard inNumPr else { return }
             if let v = Int(attributes["w:val"] ?? attributes["val"] ?? "") {
                 currentListNumId = v
+            }
+
+        // Context-sensitive: pBdr sides / tcMar sides / tcBorders sides
+        case "w:top", "top":
+            if inPBdr {
+                let color = attributes["w:color"] ?? attributes["color"] ?? ""
+                let sz = CGFloat(Int(attributes["w:sz"] ?? attributes["sz"] ?? "0") ?? 0) / 8.0
+                currentParaBorderTopHex = (color.isEmpty || color == "auto") ? nil : color
+                currentParaBorderTopWidth = sz
+            } else if inTcMar {
+                if let v = Int(attributes["w:w"] ?? attributes["w"] ?? "") {
+                    currentCellMarginTop = CGFloat(v) / 20.0
+                }
+            } else if inTcBorders {
+                let color = attributes["w:color"] ?? attributes["color"] ?? ""
+                if !color.isEmpty && color != "auto" { currentCellBorderColorHex = color }
+            }
+
+        case "w:bottom", "bottom":
+            if inPBdr {
+                let color = attributes["w:color"] ?? attributes["color"] ?? ""
+                let sz = CGFloat(Int(attributes["w:sz"] ?? attributes["sz"] ?? "0") ?? 0) / 8.0
+                currentParaBorderBottomHex = (color.isEmpty || color == "auto") ? nil : color
+                currentParaBorderBottomWidth = sz
+            } else if inTcMar {
+                if let v = Int(attributes["w:w"] ?? attributes["w"] ?? "") {
+                    currentCellMarginBottom = CGFloat(v) / 20.0
+                }
+            } else if inTcBorders {
+                let color = attributes["w:color"] ?? attributes["color"] ?? ""
+                if !color.isEmpty && color != "auto" { currentCellBorderColorHex = color }
+            }
+
+        case "w:left", "left":
+            if inTcMar {
+                if let v = Int(attributes["w:w"] ?? attributes["w"] ?? "") {
+                    currentCellMarginLeft = CGFloat(v) / 20.0
+                }
+            } else if inTcBorders {
+                let color = attributes["w:color"] ?? attributes["color"] ?? ""
+                if !color.isEmpty && color != "auto" { currentCellBorderColorHex = color }
+            }
+
+        case "w:right", "right":
+            if inTcMar {
+                if let v = Int(attributes["w:w"] ?? attributes["w"] ?? "") {
+                    currentCellMarginRight = CGFloat(v) / 20.0
+                }
+            } else if inTcBorders {
+                let color = attributes["w:color"] ?? attributes["color"] ?? ""
+                if !color.isEmpty && color != "auto" { currentCellBorderColorHex = color }
             }
 
         // Run properties
@@ -592,30 +802,21 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
         case "w:br", "br":
             let breakType = attributes["w:type"] ?? attributes["type"]
             guard breakType == "page", inParagraph, !inCell else { return }
-            // Flush pending runs before inserting page break sentinel
             if !currentRuns.isEmpty {
                 elements.append(.paragraph(makeParagraph()))
                 currentRuns = []
             }
             elements.append(.paragraph(WordParagraphContent(
-                runs: [],
-                styleName: "__pagebreak__",
-                spacingAfterPt: 0
-            )))
+                runs: [], styleName: "__pagebreak__", spacingAfterPt: 0)))
 
         case "w:sectPr", "sectPr":
-            // Mid-document section break (inside a paragraph's w:pPr) → treat as page break.
-            // Body-level w:sectPr is NOT inside a paragraph, so inParagraph is false there.
             guard inParagraph, !inCell else { break }
             if !currentRuns.isEmpty {
                 elements.append(.paragraph(makeParagraph()))
                 currentRuns = []
             }
             elements.append(.paragraph(WordParagraphContent(
-                runs: [],
-                styleName: "__pagebreak__",
-                spacingAfterPt: 0
-            )))
+                runs: [], styleName: "__pagebreak__", spacingAfterPt: 0)))
 
         case "w:pgMar", "pgMar":
             let topTwips    = Int(attributes["w:top"]    ?? attributes["top"]    ?? "1440") ?? 1440
@@ -638,15 +839,22 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
         if inText { currentRunText += string }
     }
 
+    // MARK: - didEndElement
+
     func parser(_ parser: XMLParser, didEndElement elementName: String,
                 namespaceURI: String?, qualifiedName: String?) {
         switch elementName {
 
         case "w:tbl", "tbl":
             guard inTable else { return }
-            elements.append(.table(WordTableContent(rows: currentTableRows)))
+            elements.append(.table(WordTableContent(
+                rows: currentTableRows,
+                columnWidthsPt: currentTableColWidths)))
             currentTableRows = []
             inTable = false
+
+        case "w:tblGrid", "tblGrid":
+            inTblGrid = false
 
         case "w:tr", "tr":
             guard inTable, inRow else { return }
@@ -658,15 +866,32 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
         case "w:tcPr", "tcPr":
             inTcPr = false
 
+        case "w:tcMar", "tcMar":
+            inTcMar = false
+
+        case "w:tcBorders", "tcBorders":
+            inTcBorders = false
+
         case "w:tc", "tc":
             guard inTable, inCell else { return }
+            let margins: WordTableCellMargins?
+            if let t = currentCellMarginTop, let b = currentCellMarginBottom,
+               let l = currentCellMarginLeft, let r = currentCellMarginRight {
+                margins = WordTableCellMargins(top: t, bottom: b, left: l, right: r)
+            } else {
+                margins = nil
+            }
             currentRowCells.append(WordTableCell(
                 paragraphs: currentCellParagraphs,
-                backgroundHex: currentCellBackground
-            ))
+                backgroundHex: currentCellBackground,
+                borderColorHex: currentCellBorderColorHex,
+                margins: margins))
             currentCellParagraphs = []
             currentCellBackground = nil
             inCell = false
+
+        case "w:pBdr", "pBdr":
+            inPBdr = false
 
         case "w:numPr", "numPr":
             inNumPr = false
@@ -718,7 +943,11 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
             spacingBeforePt: currentParaSpacingBefore,
             leftIndentPt: currentParaLeftIndent,
             firstLineIndentPt: currentParaFirstLineIndent,
-            backgroundHex: currentParaBackground
+            backgroundHex: currentParaBackground,
+            borderTopHex: currentParaBorderTopHex,
+            borderTopWidthPt: currentParaBorderTopWidth,
+            borderBottomHex: currentParaBorderBottomHex,
+            borderBottomWidthPt: currentParaBorderBottomWidth
         )
     }
 

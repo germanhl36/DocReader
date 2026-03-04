@@ -86,16 +86,19 @@ enum WordPageRenderer {
     static func rowHeight(for row: WordTableRow, colWidth: CGFloat) -> CGFloat {
         let minHeight: CGFloat = 20
         let maxCellHeight = row.cells.compactMap { cell -> CGFloat? in
-            let text = cell.paragraphs.flatMap { $0.runs }.map { $0.text }.joined(separator: " ")
-            guard !text.isEmpty else { return nil }
-            let font = CTFontCreateWithName("Helvetica" as CFString, 9, nil)
-            let attrs: [CFString: Any] = [kCTFontAttributeName: font]
-            let attrStr = CFAttributedStringCreate(nil, text as CFString, attrs as CFDictionary)!
-            let framesetter = CTFramesetterCreateWithAttributedString(attrStr)
-            let maxSize = CGSize(width: max(colWidth - 4, 1), height: .greatestFiniteMagnitude)
-            let fit = CTFramesetterSuggestFrameSizeWithConstraints(
-                framesetter, CFRangeMake(0, 0), nil, maxSize, nil)
-            return fit.height + 4
+            let hMargin: CGFloat = cell.margins.map { $0.left + $0.right } ?? 4.0
+            let vMargin: CGFloat = cell.margins.map { $0.top + $0.bottom } ?? 4.0
+            let textWidth = max(colWidth - hMargin, 1)
+            var totalH: CGFloat = 0
+            for para in cell.paragraphs {
+                let attrStr = buildSingleParagraphAttrStr(para)
+                let fs = CTFramesetterCreateWithAttributedString(attrStr)
+                let fit = CTFramesetterSuggestFrameSizeWithConstraints(
+                    fs, CFRangeMake(0, 0), nil,
+                    CGSize(width: textWidth, height: .greatestFiniteMagnitude), nil)
+                totalH += para.spacingBeforePt + (fit.height > 0 ? fit.height : 0) + para.spacingAfterPt
+            }
+            return totalH > 0 ? totalH + vMargin : nil
         }.max() ?? minHeight
         return max(maxCellHeight, minHeight)
     }
@@ -162,6 +165,31 @@ enum WordPageRenderer {
         let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, 0), path, nil)
         CTFrameDraw(frame, context)
 
+        // Draw paragraph top border (above text area)
+        if let hex = para.borderTopHex, let borderColor = resolveColor(hex),
+           para.borderTopWidthPt > 0 {
+            context.saveGState()
+            context.setStrokeColor(borderColor)
+            context.setLineWidth(para.borderTopWidthPt)
+            let y = currentY + height
+            context.move(to: CGPoint(x: contentRect.minX, y: y))
+            context.addLine(to: CGPoint(x: contentRect.maxX, y: y))
+            context.strokePath()
+            context.restoreGState()
+        }
+
+        // Draw paragraph bottom border (below text area)
+        if let hex = para.borderBottomHex, let borderColor = resolveColor(hex),
+           para.borderBottomWidthPt > 0 {
+            context.saveGState()
+            context.setStrokeColor(borderColor)
+            context.setLineWidth(para.borderBottomWidthPt)
+            context.move(to: CGPoint(x: contentRect.minX, y: currentY))
+            context.addLine(to: CGPoint(x: contentRect.maxX, y: currentY))
+            context.strokePath()
+            context.restoreGState()
+        }
+
         currentY -= para.spacingAfterPt
     }
 
@@ -173,10 +201,45 @@ enum WordPageRenderer {
     ) {
         guard !table.rows.isEmpty else { return }
         let colCount = table.rows.map { $0.cells.count }.max() ?? 1
-        let colWidth = contentRect.width / CGFloat(colCount)
 
-        // Compute per-row heights dynamically so cell text is never truncated
-        let rowHeights = table.rows.map { rowHeight(for: $0, colWidth: colWidth) }
+        // Column widths: use tblGrid proportional widths, or fall back to equal
+        let totalSpecWidth = table.columnWidthsPt.reduce(0, +)
+        let scale: CGFloat = (totalSpecWidth > 0) ? contentRect.width / totalSpecWidth : 1.0
+
+        let xForCol: (Int) -> CGFloat = { colIdx in
+            if totalSpecWidth > 0 && colIdx < table.columnWidthsPt.count {
+                return contentRect.minX + table.columnWidthsPt.prefix(colIdx).reduce(0, +) * scale
+            }
+            return contentRect.minX + CGFloat(colIdx) * (contentRect.width / CGFloat(max(colCount, 1)))
+        }
+        let widthForCol: (Int) -> CGFloat = { colIdx in
+            if totalSpecWidth > 0 && colIdx < table.columnWidthsPt.count {
+                return table.columnWidthsPt[colIdx] * scale
+            }
+            return contentRect.width / CGFloat(max(colCount, 1))
+        }
+
+        // Compute per-row heights using actual cell widths and paragraph-based measurement
+        let rowHeights: [CGFloat] = table.rows.map { row in
+            let minH: CGFloat = 20
+            let h = row.cells.enumerated().compactMap { (ci, cell) -> CGFloat? in
+                let cw = widthForCol(ci)
+                let hM: CGFloat = cell.margins.map { $0.left + $0.right } ?? 4.0
+                let vM: CGFloat = cell.margins.map { $0.top + $0.bottom } ?? 4.0
+                let tw = max(cw - hM, 1)
+                var ch: CGFloat = 0
+                for para in cell.paragraphs {
+                    let attrStr = buildSingleParagraphAttrStr(para)
+                    let fs = CTFramesetterCreateWithAttributedString(attrStr)
+                    let fit = CTFramesetterSuggestFrameSizeWithConstraints(
+                        fs, CFRangeMake(0, 0), nil,
+                        CGSize(width: tw, height: .greatestFiniteMagnitude), nil)
+                    ch += para.spacingBeforePt + (fit.height > 0 ? fit.height : 0) + para.spacingAfterPt
+                }
+                return ch > 0 ? ch + vM : nil
+            }.max() ?? minH
+            return max(h, minH)
+        }
         let totalHeight = rowHeights.reduce(0, +)
 
         currentY -= totalHeight
@@ -185,21 +248,18 @@ enum WordPageRenderer {
             return
         }
 
-        var rowY = currentY + totalHeight  // Start at top of table
+        var rowY = currentY + totalHeight
 
         for (rowIdx, row) in table.rows.enumerated() {
             let rh = rowHeights[rowIdx]
             rowY -= rh
 
             for (colIdx, cell) in row.cells.enumerated() {
-                let cellRect = CGRect(
-                    x: contentRect.minX + CGFloat(colIdx) * colWidth,
-                    y: rowY,
-                    width: colWidth,
-                    height: rh
-                )
+                let cx = xForCol(colIdx)
+                let cw = widthForCol(colIdx)
+                let cellRect = CGRect(x: cx, y: rowY, width: cw, height: rh)
 
-                // Cell background — use explicit color, fall back to header default
+                // Cell background — explicit color, then header default
                 let bgColor: CGColor
                 if let hex = cell.backgroundHex, let c = resolveColor(hex) {
                     bgColor = c
@@ -211,24 +271,51 @@ enum WordPageRenderer {
                 context.setFillColor(bgColor)
                 context.fill(cellRect)
 
-                // Grid lines
-                context.setStrokeColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+                // Grid lines — use cell border color if available
+                let borderStroke: CGColor
+                if let hex = cell.borderColorHex, let c = resolveColor(hex) {
+                    borderStroke = c
+                } else {
+                    borderStroke = CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1)
+                }
+                context.setStrokeColor(borderStroke)
                 context.setLineWidth(0.5)
                 context.stroke(cellRect)
 
-                // Cell text — luminance-based color for readability
-                let text = cell.paragraphs.flatMap { $0.runs }.map { $0.text }.joined(separator: " ")
-                guard !text.isEmpty else { continue }
-                let textColor: CGColor = isDark(bgColor)
-                    ? CGColor(red: 1, green: 1, blue: 1, alpha: 1)
-                    : CGColor(red: 0, green: 0, blue: 0, alpha: 1)
-                renderCTText(text, in: context,
-                             rect: cellRect.insetBy(dx: 2, dy: 2),
-                             fontSize: 9, color: textColor)
+                // Cell content — render each paragraph with proper formatting
+                let hMarginL: CGFloat = cell.margins?.left   ?? 2
+                let hMarginR: CGFloat = cell.margins?.right  ?? 2
+                let vMarginT: CGFloat = cell.margins?.top    ?? 2
+                let vMarginB: CGFloat = cell.margins?.bottom ?? 2
+                let textRect = CGRect(
+                    x: cellRect.minX + hMarginL,
+                    y: cellRect.minY + vMarginB,
+                    width: cellRect.width - hMarginL - hMarginR,
+                    height: cellRect.height - vMarginT - vMarginB
+                )
+                var cellY = textRect.maxY
+                for para in cell.paragraphs {
+                    guard cellY > textRect.minY else { break }
+                    cellY -= para.spacingBeforePt
+                    let attrStr = buildSingleParagraphAttrStr(para)
+                    let fs = CTFramesetterCreateWithAttributedString(attrStr)
+                    let fit = CTFramesetterSuggestFrameSizeWithConstraints(
+                        fs, CFRangeMake(0, 0), nil,
+                        CGSize(width: max(textRect.width, 1), height: .greatestFiniteMagnitude), nil)
+                    let ph = fit.height > 0 ? fit.height : 0
+                    cellY -= ph
+                    guard cellY >= textRect.minY - ph else { break }
+                    let paraPath = CGPath(
+                        rect: CGRect(x: textRect.minX, y: cellY, width: textRect.width, height: ph),
+                        transform: nil)
+                    let paraFrame = CTFramesetterCreateFrame(fs, CFRangeMake(0, 0), paraPath, nil)
+                    CTFrameDraw(paraFrame, context)
+                    cellY -= para.spacingAfterPt
+                }
             }
         }
 
-        currentY -= 4  // Bottom spacing after table
+        currentY -= 4
     }
 
     // MARK: - Attributed string builders
@@ -284,7 +371,7 @@ enum WordPageRenderer {
         } else {
             // Empty paragraph — add a newline so it occupies space
             let nl = "\n" as CFString
-            let defaultFont = CTFontCreateWithName("Helvetica" as CFString, 12, nil)
+            let defaultFont = CTFontCreateWithName("Arial" as CFString, 10, nil)
             CFAttributedStringBeginEditing(cfStr)
             CFAttributedStringReplaceString(cfStr, CFRangeMake(0, 0), nl)
             CFAttributedStringSetAttribute(cfStr, CFRangeMake(0, 1),

@@ -231,4 +231,56 @@ final class RichFormattingTests: XCTestCase {
                                  fontSizePt: 12, hexColor: nil, fontFamily: "Calibri")
         XCTAssertEqual(run.fontFamily, "Calibri")
     }
+
+    // MARK: - Paragraph border fields
+
+    func testParagraphBorderTopDefaultNil() {
+        let para = WordParagraphContent(runs: [], styleName: "Normal", spacingAfterPt: 0)
+        XCTAssertNil(para.borderTopHex)
+        XCTAssertEqual(para.borderTopWidthPt, 0)
+    }
+
+    func testParagraphBorderBottomExplicit() {
+        let para = WordParagraphContent(
+            runs: [], styleName: "Heading1", spacingAfterPt: 0,
+            borderBottomHex: "2E86C1", borderBottomWidthPt: 1)
+        XCTAssertEqual(para.borderBottomHex, "2E86C1")
+        XCTAssertEqual(para.borderBottomWidthPt, 1)
+    }
+
+    // MARK: - Table cell margins
+
+    func testTableCellMarginsDefaultNil() {
+        let cell = WordTableCell(paragraphs: [])
+        XCTAssertNil(cell.margins)
+    }
+
+    func testTableCellMarginsExplicit() {
+        let margins = WordTableCellMargins(top: 6, bottom: 6, left: 9, right: 9)
+        let cell = WordTableCell(paragraphs: [], margins: margins)
+        XCTAssertEqual(cell.margins?.left, 9)
+        XCTAssertEqual(cell.margins?.top, 6)
+    }
+
+    func testTableCellBorderColorDefaultNil() {
+        let cell = WordTableCell(paragraphs: [])
+        XCTAssertNil(cell.borderColorHex)
+    }
+
+    func testTableCellBorderColorExplicit() {
+        let cell = WordTableCell(paragraphs: [], borderColorHex: "AAAAAA")
+        XCTAssertEqual(cell.borderColorHex, "AAAAAA")
+    }
+
+    // MARK: - Table column widths
+
+    func testTableColumnWidthsDefaultEmpty() {
+        let table = WordTableContent(rows: [])
+        XCTAssertTrue(table.columnWidthsPt.isEmpty)
+    }
+
+    func testTableColumnWidthsExplicit() {
+        let table = WordTableContent(rows: [], columnWidthsPt: [234, 234])
+        XCTAssertEqual(table.columnWidthsPt, [234, 234])
+    }
 }

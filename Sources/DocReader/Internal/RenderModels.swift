@@ -25,11 +25,24 @@ struct WordParagraphContent: Sendable {
     var leftIndentPt: CGFloat = 0
     var firstLineIndentPt: CGFloat = 0
     var backgroundHex: String? = nil
+    var borderTopHex: String? = nil
+    var borderTopWidthPt: CGFloat = 0
+    var borderBottomHex: String? = nil
+    var borderBottomWidthPt: CGFloat = 0
+}
+
+struct WordTableCellMargins: Sendable {
+    var top: CGFloat
+    var bottom: CGFloat
+    var left: CGFloat
+    var right: CGFloat
 }
 
 struct WordTableCell: Sendable {
     var paragraphs: [WordParagraphContent]
     var backgroundHex: String? = nil
+    var borderColorHex: String? = nil
+    var margins: WordTableCellMargins? = nil
 }
 
 struct WordTableRow: Sendable {
@@ -39,6 +52,7 @@ struct WordTableRow: Sendable {
 
 struct WordTableContent: Sendable {
     var rows: [WordTableRow]
+    var columnWidthsPt: [CGFloat] = []
 }
 
 enum WordElement: Sendable {
