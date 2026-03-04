@@ -678,13 +678,11 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
 
         case "w:p", "p":
             guard inParagraph else { return }
-            if !currentRuns.isEmpty {
-                let para = makeParagraph()
-                if inCell {
-                    currentCellParagraphs.append(para)
-                } else {
-                    elements.append(.paragraph(para))
-                }
+            let para = makeParagraph()
+            if inCell {
+                currentCellParagraphs.append(para)
+            } else {
+                elements.append(.paragraph(para))
             }
             inParagraph = false
 
