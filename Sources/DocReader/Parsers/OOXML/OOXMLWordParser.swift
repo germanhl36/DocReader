@@ -603,6 +603,20 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
                 spacingAfterPt: 0
             )))
 
+        case "w:sectPr", "sectPr":
+            // Mid-document section break (inside a paragraph's w:pPr) → treat as page break.
+            // Body-level w:sectPr is NOT inside a paragraph, so inParagraph is false there.
+            guard inParagraph, !inCell else { break }
+            if !currentRuns.isEmpty {
+                elements.append(.paragraph(makeParagraph()))
+                currentRuns = []
+            }
+            elements.append(.paragraph(WordParagraphContent(
+                runs: [],
+                styleName: "__pagebreak__",
+                spacingAfterPt: 0
+            )))
+
         case "w:pgMar", "pgMar":
             let topTwips    = Int(attributes["w:top"]    ?? attributes["top"]    ?? "1440") ?? 1440
             let bottomTwips = Int(attributes["w:bottom"] ?? attributes["bottom"] ?? "1440") ?? 1440
