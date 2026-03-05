@@ -22,14 +22,17 @@ enum WordPageRenderer {
 
         // Y-UP: start at the top of the content area
         var currentY = contentRect.maxY
+        var prevSpacingAfterPt: CGFloat = 0
 
         for element in content.elements {
             switch element {
             case .paragraph(let para):
                 guard para.styleName != "__pagebreak__" else { continue }
-                drawParagraph(para, in: context, contentRect: contentRect, currentY: &currentY)
+                drawParagraph(para, in: context, contentRect: contentRect,
+                              currentY: &currentY, prevSpacingAfterPt: &prevSpacingAfterPt)
             case .table(let table):
                 drawTable(table, in: context, contentRect: contentRect, currentY: &currentY)
+                prevSpacingAfterPt = 0
             }
         }
     }
@@ -138,9 +141,14 @@ enum WordPageRenderer {
         _ para: WordParagraphContent,
         in context: CGContext,
         contentRect: CGRect,
-        currentY: inout CGFloat
+        currentY: inout CGFloat,
+        prevSpacingAfterPt: inout CGFloat
     ) {
-        currentY -= para.spacingBeforePt
+        // Paragraph spacing collapse (Word rule): the gap between two adjacent paragraphs
+        // is max(prevAfter, thisBefore), not the sum. Only apply the additional spacing
+        // beyond what the previous paragraph's spacing-after already consumed.
+        let additionalBefore = max(0, para.spacingBeforePt - prevSpacingAfterPt)
+        currentY -= additionalBefore
 
         let attrStr = buildSingleParagraphAttrStr(para)
         let framesetter = CTFramesetterCreateWithAttributedString(attrStr)
@@ -156,16 +164,18 @@ enum WordPageRenderer {
         // Clip elements that overflow below the page
         guard currentY >= contentRect.minY - height else {
             currentY -= para.spacingAfterPt
+            prevSpacingAfterPt = para.spacingAfterPt
             return
         }
 
-        // Draw shading background
+        // Draw shading background — extend into the spacing-after area so that consecutive
+        // shaded paragraphs (e.g. code blocks) form a solid band without white gaps.
         if let bgHex = para.backgroundHex, let bgColor = resolveColor(bgHex) {
             let bgRect = CGRect(
                 x: contentRect.minX,
-                y: currentY,
+                y: currentY - para.spacingAfterPt,
                 width: contentRect.width,
-                height: height
+                height: height + para.spacingAfterPt
             )
             context.setFillColor(bgColor)
             context.fill(bgRect)
@@ -208,6 +218,7 @@ enum WordPageRenderer {
         }
 
         currentY -= para.spacingAfterPt
+        prevSpacingAfterPt = para.spacingAfterPt
     }
 
     private static func drawTable(
@@ -377,42 +388,32 @@ enum WordPageRenderer {
     }
 
     private static func buildCTParagraphStyle(_ para: WordParagraphContent) -> CTParagraphStyle {
+        // Spacing (spacingBefore/After) is handled externally via currentY adjustments with
+        // paragraph spacing collapse. Do NOT pass them into the CTParagraphStyle — doing so
+        // would cause them to be included in CTFramesetterSuggestFrameSizeWithConstraints
+        // and then double-counted when we also subtract them from currentY.
         var alignment = para.alignment
         var headIndent: CGFloat = para.leftIndentPt
         var firstLineIndent: CGFloat = para.leftIndentPt + para.firstLineIndentPt
-        var paragraphSpacing: CGFloat = para.spacingAfterPt
-        var paragraphSpacingBefore: CGFloat = para.spacingBeforePt
 
         return withUnsafePointer(to: &alignment) { aPtr in
             withUnsafePointer(to: &headIndent) { hPtr in
                 withUnsafePointer(to: &firstLineIndent) { fPtr in
-                    withUnsafePointer(to: &paragraphSpacing) { spPtr in
-                        withUnsafePointer(to: &paragraphSpacingBefore) { sbPtr in
-                            let settings: [CTParagraphStyleSetting] = [
-                                CTParagraphStyleSetting(
-                                    spec: .alignment,
-                                    valueSize: MemoryLayout<CTTextAlignment>.size,
-                                    value: UnsafeRawPointer(aPtr)),
-                                CTParagraphStyleSetting(
-                                    spec: .headIndent,
-                                    valueSize: MemoryLayout<CGFloat>.size,
-                                    value: UnsafeRawPointer(hPtr)),
-                                CTParagraphStyleSetting(
-                                    spec: .firstLineHeadIndent,
-                                    valueSize: MemoryLayout<CGFloat>.size,
-                                    value: UnsafeRawPointer(fPtr)),
-                                CTParagraphStyleSetting(
-                                    spec: .paragraphSpacing,
-                                    valueSize: MemoryLayout<CGFloat>.size,
-                                    value: UnsafeRawPointer(spPtr)),
-                                CTParagraphStyleSetting(
-                                    spec: .paragraphSpacingBefore,
-                                    valueSize: MemoryLayout<CGFloat>.size,
-                                    value: UnsafeRawPointer(sbPtr)),
-                            ]
-                            return CTParagraphStyleCreate(settings, settings.count)
-                        }
-                    }
+                    let settings: [CTParagraphStyleSetting] = [
+                        CTParagraphStyleSetting(
+                            spec: .alignment,
+                            valueSize: MemoryLayout<CTTextAlignment>.size,
+                            value: UnsafeRawPointer(aPtr)),
+                        CTParagraphStyleSetting(
+                            spec: .headIndent,
+                            valueSize: MemoryLayout<CGFloat>.size,
+                            value: UnsafeRawPointer(hPtr)),
+                        CTParagraphStyleSetting(
+                            spec: .firstLineHeadIndent,
+                            valueSize: MemoryLayout<CGFloat>.size,
+                            value: UnsafeRawPointer(fPtr)),
+                    ]
+                    return CTParagraphStyleCreate(settings, settings.count)
                 }
             }
         }

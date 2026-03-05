@@ -175,6 +175,7 @@ func splitIntoWordPages(
     var pages: [WordPageContent] = []
     var current: [WordElement] = []
     var remainingY: CGFloat = contentHeight
+    var prevSpacingAfterPt: CGFloat = 0
 
     for element in elements {
         // Explicit page break — flush and start a new page
@@ -182,16 +183,29 @@ func splitIntoWordPages(
             pages.append(WordPageContent(elements: current, pageSize: pageSize, margins: margins))
             current = []
             remainingY = contentHeight
+            prevSpacingAfterPt = 0
             continue
         }
 
-        let elementHeight = WordPageRenderer.measureElement(element, availableWidth: contentWidth)
+        var elementHeight = WordPageRenderer.measureElement(element, availableWidth: contentWidth)
+
+        // Paragraph spacing collapse (Word rule): the effective gap between two adjacent
+        // paragraphs is max(prevAfter, thisBefore), not the sum. Subtract the redundant
+        // portion from this element's measured height for accurate page-break decisions.
+        if case .paragraph(let para) = element {
+            let collapsedSaving = min(para.spacingBeforePt, prevSpacingAfterPt)
+            elementHeight -= collapsedSaving
+            prevSpacingAfterPt = para.spacingAfterPt
+        } else {
+            prevSpacingAfterPt = 0
+        }
 
         // Overflow — start a new page before adding this element
         if !current.isEmpty && elementHeight > 0 && remainingY - elementHeight < 0 {
             pages.append(WordPageContent(elements: current, pageSize: pageSize, margins: margins))
             current = []
             remainingY = contentHeight
+            prevSpacingAfterPt = 0
         }
 
         current.append(element)
