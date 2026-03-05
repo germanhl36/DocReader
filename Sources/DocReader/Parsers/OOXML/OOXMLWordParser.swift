@@ -1063,22 +1063,25 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
         let counter = (listCounters[key] ?? (numbering.startVal(numId: numId, ilvl: ilvl) - 1)) + 1
         listCounters[key] = counter
 
+        // Use a tab character after the glyph/number so the text jumps to the leftIndentPt
+        // tab stop defined in the CTParagraphStyle. This aligns first-line text with the
+        // wrapped lines (both start at leftIndentPt), matching Word's native rendering.
         switch format {
         case "bullet":
             let char = numbering.lvlText(numId: numId, ilvl: ilvl) ?? (ilvl == 0 ? "•" : "◦")
-            return char + " "
+            return char + "\t"
         case "decimal":
-            return "\(counter). "
+            return "\(counter).\t"
         case "lowerLetter":
-            return "\(letterLabel(counter - 1)). "
+            return "\(letterLabel(counter - 1)).\t"
         case "upperLetter":
-            return "\(letterLabel(counter - 1).uppercased()). "
+            return "\(letterLabel(counter - 1).uppercased()).\t"
         case "lowerRoman":
-            return "\(romanNumeral(counter).lowercased()). "
+            return "\(romanNumeral(counter).lowercased()).\t"
         case "upperRoman":
-            return "\(romanNumeral(counter)). "
+            return "\(romanNumeral(counter)).\t"
         default:
-            return "• "
+            return "•\t"
         }
     }
 

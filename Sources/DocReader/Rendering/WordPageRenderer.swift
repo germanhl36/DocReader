@@ -413,7 +413,7 @@ enum WordPageRenderer {
         return withUnsafePointer(to: &alignment) { aPtr in
             withUnsafePointer(to: &headIndent) { hPtr in
                 withUnsafePointer(to: &firstLineIndent) { fPtr in
-                    let settings: [CTParagraphStyleSetting] = [
+                    var settings: [CTParagraphStyleSetting] = [
                         CTParagraphStyleSetting(
                             spec: .alignment,
                             valueSize: MemoryLayout<CTTextAlignment>.size,
@@ -427,6 +427,20 @@ enum WordPageRenderer {
                             valueSize: MemoryLayout<CGFloat>.size,
                             value: UnsafeRawPointer(fPtr)),
                     ]
+                    // For list items (hanging indent), add a tab stop at leftIndentPt.
+                    // The "\t" in the list prefix then jumps the text to that position,
+                    // making first-line text align with all subsequent wrapped lines.
+                    if para.firstLineIndentPt < 0 && para.leftIndentPt > 0 {
+                        let tabStop = CTTextTabCreate(.left, Double(para.leftIndentPt), nil)
+                        var tabStopsArray: CFArray = [tabStop] as CFArray
+                        return withUnsafePointer(to: &tabStopsArray) { tsPtr in
+                            settings.append(CTParagraphStyleSetting(
+                                spec: .tabStops,
+                                valueSize: MemoryLayout<CFArray>.size,
+                                value: UnsafeRawPointer(tsPtr)))
+                            return CTParagraphStyleCreate(settings, settings.count)
+                        }
+                    }
                     return CTParagraphStyleCreate(settings, settings.count)
                 }
             }
