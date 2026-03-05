@@ -23,16 +23,20 @@ enum WordPageRenderer {
         // Y-UP: start at the top of the content area
         var currentY = contentRect.maxY
         var prevSpacingAfterPt: CGFloat = 0
+        var prevBackgroundHex: String? = nil
 
         for element in content.elements {
             switch element {
             case .paragraph(let para):
                 guard para.styleName != "__pagebreak__" else { continue }
                 drawParagraph(para, in: context, contentRect: contentRect,
-                              currentY: &currentY, prevSpacingAfterPt: &prevSpacingAfterPt)
+                              currentY: &currentY, prevSpacingAfterPt: &prevSpacingAfterPt,
+                              prevBackgroundHex: prevBackgroundHex)
+                prevBackgroundHex = para.backgroundHex
             case .table(let table):
                 drawTable(table, in: context, contentRect: contentRect, currentY: &currentY)
                 prevSpacingAfterPt = 0
+                prevBackgroundHex = nil
             }
         }
     }
@@ -142,7 +146,8 @@ enum WordPageRenderer {
         in context: CGContext,
         contentRect: CGRect,
         currentY: inout CGFloat,
-        prevSpacingAfterPt: inout CGFloat
+        prevSpacingAfterPt: inout CGFloat,
+        prevBackgroundHex: String?
     ) {
         // Paragraph spacing collapse (Word rule): the gap between two adjacent paragraphs
         // is max(prevAfter, thisBefore), not the sum. Only apply the additional spacing
@@ -168,14 +173,19 @@ enum WordPageRenderer {
             return
         }
 
-        // Draw shading background — extend into the spacing-after area so that consecutive
-        // shaded paragraphs (e.g. code blocks) form a solid band without white gaps.
+        // Draw shading background.
+        // Extend into spacing-after so consecutive shaded paragraphs form a solid band.
+        // When spacing was collapsed with a preceding same-background paragraph, also extend
+        // upward by prevSpacingAfterPt to overdraw that paragraph's spacing-after zone —
+        // this guarantees overlap and eliminates sub-pixel seam artifacts at shared edges.
         if let bgHex = para.backgroundHex, let bgColor = resolveColor(bgHex) {
+            let topExtension: CGFloat = (additionalBefore == 0 && prevBackgroundHex == bgHex)
+                ? prevSpacingAfterPt : 0
             let bgRect = CGRect(
                 x: contentRect.minX,
                 y: currentY - para.spacingAfterPt,
                 width: contentRect.width,
-                height: height + para.spacingAfterPt
+                height: height + topExtension + para.spacingAfterPt
             )
             context.setFillColor(bgColor)
             context.fill(bgRect)
