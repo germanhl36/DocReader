@@ -596,6 +596,8 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
     // MARK: - Table state
     private var inTable = false
     private var inRow = false
+    private var inTrPr = false
+    private var currentRowIsHeader = false
     private var inCell = false
     private var inTcPr = false
     private var inTcMar = false
@@ -637,7 +639,17 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
         case "w:tr", "tr":
             guard inTable else { return }
             inRow = true
+            inTrPr = false
+            currentRowIsHeader = false
             currentRowCells = []
+
+        case "w:trPr", "trPr":
+            guard inRow else { return }
+            inTrPr = true
+
+        case "w:tblHeader", "tblHeader":
+            guard inTrPr else { return }
+            currentRowIsHeader = true
 
         case "w:tc", "tc":
             guard inTable, inRow else { return }
@@ -916,9 +928,13 @@ final class OOXMLDocumentBodyParser: NSObject, XMLParserDelegate, @unchecked Sen
         case "w:tblGrid", "tblGrid":
             inTblGrid = false
 
+        case "w:trPr", "trPr":
+            inTrPr = false
+
         case "w:tr", "tr":
             guard inTable, inRow else { return }
-            let isHeader = currentTableRows.isEmpty
+            // Use w:tblHeader flag if present; fall back to first-row detection
+            let isHeader = currentRowIsHeader || currentTableRows.isEmpty
             currentTableRows.append(WordTableRow(cells: currentRowCells, isHeader: isHeader))
             currentRowCells = []
             inRow = false

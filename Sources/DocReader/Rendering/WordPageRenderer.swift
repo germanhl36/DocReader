@@ -76,19 +76,31 @@ enum WordPageRenderer {
             return para.spacingBeforePt + max(fitSize.height, 14) + para.spacingAfterPt
         case .table(let table):
             guard !table.rows.isEmpty else { return 0 }
-            let colCount = table.rows.map { $0.cells.count }.max() ?? 1
-            let colWidth = colCount > 0 ? availableWidth / CGFloat(colCount) : availableWidth
-            return table.rows.reduce(0) { $0 + rowHeight(for: $1, colWidth: colWidth) } + 4
+            let colWidths = columnWidths(for: table, availableWidth: availableWidth)
+            return table.rows.reduce(0) { $0 + rowHeight(for: $1, columnWidths: colWidths) } + 4
         }
     }
 
-    /// Measures the height of a single table row based on its cell content.
-    static func rowHeight(for row: WordTableRow, colWidth: CGFloat) -> CGFloat {
+    /// Computes the rendered width of each column, scaled to fill availableWidth.
+    static func columnWidths(for table: WordTableContent, availableWidth: CGFloat) -> [CGFloat] {
+        let totalSpec = table.columnWidthsPt.reduce(0, +)
+        if totalSpec > 0 && !table.columnWidthsPt.isEmpty {
+            let scale = availableWidth / totalSpec
+            return table.columnWidthsPt.map { $0 * scale }
+        }
+        let colCount = max(table.rows.map { $0.cells.count }.max() ?? 1, 1)
+        let w = availableWidth / CGFloat(colCount)
+        return Array(repeating: w, count: colCount)
+    }
+
+    /// Measures the height of a single table row based on its cell content and per-column widths.
+    static func rowHeight(for row: WordTableRow, columnWidths: [CGFloat]) -> CGFloat {
         let minHeight: CGFloat = 20
-        let maxCellHeight = row.cells.compactMap { cell -> CGFloat? in
+        let maxCellHeight = row.cells.enumerated().compactMap { (ci, cell) -> CGFloat? in
+            let cw = ci < columnWidths.count ? columnWidths[ci] : (columnWidths.last ?? minHeight)
             let hMargin: CGFloat = cell.margins.map { $0.left + $0.right } ?? 4.0
             let vMargin: CGFloat = cell.margins.map { $0.top + $0.bottom } ?? 4.0
-            let textWidth = max(colWidth - hMargin, 1)
+            let textWidth = max(cw - hMargin, 1)
             var totalH: CGFloat = 0
             for para in cell.paragraphs {
                 let attrStr = buildSingleParagraphAttrStr(para)
@@ -101,6 +113,11 @@ enum WordPageRenderer {
             return totalH > 0 ? totalH + vMargin : nil
         }.max() ?? minHeight
         return max(maxCellHeight, minHeight)
+    }
+
+    /// Legacy overload used by tests — keeps a single uniform column width for one-column tables.
+    static func rowHeight(for row: WordTableRow, colWidth: CGFloat) -> CGFloat {
+        rowHeight(for: row, columnWidths: [colWidth])
     }
 
     // MARK: - Internal helpers (accessible for tests)
@@ -200,46 +217,19 @@ enum WordPageRenderer {
         currentY: inout CGFloat
     ) {
         guard !table.rows.isEmpty else { return }
-        let colCount = table.rows.map { $0.cells.count }.max() ?? 1
 
-        // Column widths: use tblGrid proportional widths, or fall back to equal
-        let totalSpecWidth = table.columnWidthsPt.reduce(0, +)
-        let scale: CGFloat = (totalSpecWidth > 0) ? contentRect.width / totalSpecWidth : 1.0
+        // Column widths (shared with measureElement for consistent layout)
+        let colWidths = columnWidths(for: table, availableWidth: contentRect.width)
 
         let xForCol: (Int) -> CGFloat = { colIdx in
-            if totalSpecWidth > 0 && colIdx < table.columnWidthsPt.count {
-                return contentRect.minX + table.columnWidthsPt.prefix(colIdx).reduce(0, +) * scale
-            }
-            return contentRect.minX + CGFloat(colIdx) * (contentRect.width / CGFloat(max(colCount, 1)))
+            contentRect.minX + colWidths.prefix(colIdx).reduce(0, +)
         }
         let widthForCol: (Int) -> CGFloat = { colIdx in
-            if totalSpecWidth > 0 && colIdx < table.columnWidthsPt.count {
-                return table.columnWidthsPt[colIdx] * scale
-            }
-            return contentRect.width / CGFloat(max(colCount, 1))
+            colIdx < colWidths.count ? colWidths[colIdx] : (colWidths.last ?? contentRect.width)
         }
 
-        // Compute per-row heights using actual cell widths and paragraph-based measurement
-        let rowHeights: [CGFloat] = table.rows.map { row in
-            let minH: CGFloat = 20
-            let h = row.cells.enumerated().compactMap { (ci, cell) -> CGFloat? in
-                let cw = widthForCol(ci)
-                let hM: CGFloat = cell.margins.map { $0.left + $0.right } ?? 4.0
-                let vM: CGFloat = cell.margins.map { $0.top + $0.bottom } ?? 4.0
-                let tw = max(cw - hM, 1)
-                var ch: CGFloat = 0
-                for para in cell.paragraphs {
-                    let attrStr = buildSingleParagraphAttrStr(para)
-                    let fs = CTFramesetterCreateWithAttributedString(attrStr)
-                    let fit = CTFramesetterSuggestFrameSizeWithConstraints(
-                        fs, CFRangeMake(0, 0), nil,
-                        CGSize(width: tw, height: .greatestFiniteMagnitude), nil)
-                    ch += para.spacingBeforePt + (fit.height > 0 ? fit.height : 0) + para.spacingAfterPt
-                }
-                return ch > 0 ? ch + vM : nil
-            }.max() ?? minH
-            return max(h, minH)
-        }
+        // Compute per-row heights using actual cell widths
+        let rowHeights: [CGFloat] = table.rows.map { rowHeight(for: $0, columnWidths: colWidths) }
         let totalHeight = rowHeights.reduce(0, +)
 
         currentY -= totalHeight
@@ -324,11 +314,15 @@ enum WordPageRenderer {
         let cfStr = CFAttributedStringCreateMutable(nil, 0)!
         var offset = 0
 
-        // Prepend list prefix as a virtual run
+        // Prepend list prefix as a virtual run inheriting font from first text run
         var allRuns = para.runs
         if let prefix = para.listPrefix, !prefix.isEmpty {
+            let firstRun = para.runs.first
             let prefixRun = WordRunContent(
-                text: prefix, bold: false, italic: false, fontSizePt: 0, hexColor: nil)
+                text: prefix, bold: false, italic: false,
+                fontSizePt: firstRun?.fontSizePt ?? 0,
+                hexColor: nil,
+                fontFamily: firstRun?.fontFamily)
             allRuns = [prefixRun] + allRuns
         }
 
