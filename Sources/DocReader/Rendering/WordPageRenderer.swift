@@ -76,7 +76,7 @@ enum WordPageRenderer {
             guard para.styleName != "__pagebreak__" else { return 0 }
             let attrStr = buildSingleParagraphAttrStr(para)
             let framesetter = CTFramesetterCreateWithAttributedString(attrStr)
-            let availW = max(availableWidth - para.leftIndentPt, 1)
+            let availW = max(availableWidth, 1)
             let maxSize = CGSize(width: availW, height: .greatestFiniteMagnitude)
             let fitSize = CTFramesetterSuggestFrameSizeWithConstraints(
                 framesetter, CFRangeMake(0, 0), nil, maxSize, nil)
@@ -158,7 +158,9 @@ enum WordPageRenderer {
         let attrStr = buildSingleParagraphAttrStr(para)
         let framesetter = CTFramesetterCreateWithAttributedString(attrStr)
 
-        let availWidth = contentRect.width - para.leftIndentPt
+        // Use full content width: the CTParagraphStyle headIndent/firstLineHeadIndent already
+        // encode leftIndentPt and the hanging offset, so we must NOT also shift the frame.
+        let availWidth = contentRect.width
         let maxSize = CGSize(width: availWidth, height: CGFloat.greatestFiniteMagnitude)
         let fitSize = CTFramesetterSuggestFrameSizeWithConstraints(
             framesetter, CFRangeMake(0, 0), nil, maxSize, nil)
@@ -191,9 +193,11 @@ enum WordPageRenderer {
             context.fill(bgRect)
         }
 
-        // Draw paragraph text
+        // Draw paragraph text — frame covers the full content width.
+        // Indentation (leftIndentPt, firstLineIndentPt) is encoded in the CTParagraphStyle
+        // attributes (headIndent, firstLineHeadIndent) and applied by CoreText internally.
         let textRect = CGRect(
-            x: contentRect.minX + para.leftIndentPt,
+            x: contentRect.minX,
             y: currentY,
             width: availWidth,
             height: height
