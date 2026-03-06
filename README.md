@@ -15,6 +15,10 @@ A native Swift Package for reading and inspecting Microsoft Office documents on 
 | Page dimensions | `.docx` `.xlsx` `.pptx` `.ppt` |
 | Document metadata | All formats |
 | PDF export | All formats |
+| PWG-Raster export | All formats |
+| URF / AirPrint export | All formats |
+| PCL 5 export | All formats |
+| PCL XL export | All formats |
 
 - Swift 6 strict concurrency (`StrictConcurrency = complete`)
 - Off-main-thread rendering via `@DocRenderActor`
@@ -60,6 +64,18 @@ let pdf = try await doc.exportPDF()
 
 // Export a single page
 let page1 = try await doc.exportPDF(pages: 0...0)
+
+// Export printer-native formats (default 300 DPI)
+let pwg   = try await doc.exportPWGRaster()   // PWG-Raster (CUPS / IPP)
+let urf   = try await doc.exportURF()          // URF / UNIRAST (AirPrint)
+let pcl   = try await doc.exportPCL()          // PCL 5
+let pclxl = try await doc.exportPCLXL()        // PCL XL / PCL 6
+
+// Custom resolution
+let hq = try await doc.exportPCL(resolution: 600)
+
+// Works on any PDF Data directly
+let pwgFromPDF = try await PrintExporter.exportPWGRaster(pdf: pdfData, resolution: 300)
 ```
 
 ## Architecture
