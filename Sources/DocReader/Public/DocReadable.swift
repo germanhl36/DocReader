@@ -29,3 +29,25 @@ public protocol DocReadable: Actor {
     /// - Parameter pages: A closed range of zero-based page indices.
     func exportPDF(pages: ClosedRange<Int>) async throws -> Data
 }
+
+public extension DocReadable {
+    /// Exports the full document as PWG-Raster data.
+    func exportPWGRaster(resolution: Int = 300) async throws -> Data {
+        try await PrintExporter.exportPWGRaster(pdf: exportPDF(), resolution: resolution)
+    }
+
+    /// Exports the full document as Apple URF (UNIRAST) data.
+    func exportURF(resolution: Int = 300) async throws -> Data {
+        try await PrintExporter.exportURF(pdf: exportPDF(), resolution: resolution)
+    }
+
+    /// Exports the full document as PCL 5 raster data.
+    func exportPCL(resolution: Int = 300) async throws -> Data {
+        try await PrintExporter.exportPCL(pdf: exportPDF(), resolution: resolution)
+    }
+
+    /// Exports the full document as PCL XL data.
+    func exportPCLXL(resolution: Int = 300) async throws -> Data {
+        try await PrintExporter.exportPCLXL(pdf: exportPDF(), resolution: resolution)
+    }
+}
