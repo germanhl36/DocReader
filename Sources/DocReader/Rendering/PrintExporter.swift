@@ -35,15 +35,15 @@ public enum PrintExporter {
             let widthPx  = Int(ceil(mediaBox.width  * scale))
             let heightPx = Int(ceil(mediaBox.height * scale))
 
-            // Create RGBA8888 context
-            let bytesPerRow = widthPx * 4
-            var rawBytes = [UInt8](repeating: 255, count: bytesPerRow * heightPx)
+            // Let CoreGraphics own the backing buffer (data: nil) so the pointer
+            // remains valid across all draw calls. Passing &swiftArray would only
+            // pin the buffer for the duration of CGContext(data:...) itself.
             guard let ctx = CGContext(
-                data: &rawBytes,
+                data: nil,
                 width: widthPx,
                 height: heightPx,
                 bitsPerComponent: 8,
-                bytesPerRow: bytesPerRow,
+                bytesPerRow: 0,          // 0 = CoreGraphics picks optimal stride
                 space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             ) else {
@@ -57,12 +57,19 @@ public enum PrintExporter {
             ctx.scaleBy(x: scale, y: scale)
             page.draw(with: .mediaBox, to: ctx)
 
-            // Strip alpha: RGBA → RGB, also flip rows (CGContext is bottom-up)
+            // Read pixels from the CoreGraphics-managed buffer
+            let actualBytesPerRow = ctx.bytesPerRow
+            guard let rawPtr = ctx.data else {
+                throw DocReaderError.internalError("CGContext has no backing data")
+            }
+            let rawBytes = rawPtr.bindMemory(to: UInt8.self, capacity: actualBytesPerRow * heightPx)
+
+            // Strip alpha: RGBA → RGB, flip rows (CGContext origin is bottom-left)
             var rgb = [UInt8](repeating: 0, count: widthPx * heightPx * 3)
             for row in 0..<heightPx {
                 let srcRow = heightPx - 1 - row   // flip vertical
                 for col in 0..<widthPx {
-                    let srcBase = srcRow * bytesPerRow + col * 4
+                    let srcBase = srcRow * actualBytesPerRow + col * 4
                     let dstBase = row   * widthPx * 3 + col * 3
                     rgb[dstBase]     = rawBytes[srcBase]
                     rgb[dstBase + 1] = rawBytes[srcBase + 1]
