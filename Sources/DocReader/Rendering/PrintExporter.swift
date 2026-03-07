@@ -1,6 +1,5 @@
 import Foundation
 import CoreGraphics
-import PDFKit
 
 /// Rendered bitmap data for a single page, ready for printer-format encoding.
 public struct PrintRasterPage: Sendable {
@@ -22,45 +21,42 @@ public enum PrintExporter {
     // MARK: - PDF → Bitmap
 
     /// Renders every page of `pdf` into ``PrintRasterPage`` values at `resolution` DPI.
+    ///
+    /// Uses pure CoreGraphics (`CGPDFDocument`) — no PDFKit — so rendering is
+    /// fully thread-safe and works correctly on `@DocRenderActor`.
     @DocRenderActor
     public static func renderPages(pdf: Data, resolution: Int) throws -> [PrintRasterPage] {
-        guard let document = PDFDocument(data: pdf) else {
+        guard let provider = CGDataProvider(data: pdf as CFData),
+              let cgDoc = CGPDFDocument(provider) else {
             throw DocReaderError.corruptedFile
         }
+        let pageCount = cgDoc.numberOfPages   // 1-based in CoreGraphics
         let scale = CGFloat(resolution) / 72.0
         var pages: [PrintRasterPage] = []
-        for i in 0..<document.pageCount {
-            guard let page = document.page(at: i) else { continue }
-            let mediaBox = page.bounds(for: .mediaBox)
+        for i in 1...max(1, pageCount) {
+            guard let cgPage = cgDoc.page(at: i) else { continue }
+            let mediaBox = cgPage.getBoxRect(.mediaBox)
             let widthPx  = Int(ceil(mediaBox.width  * scale))
             let heightPx = Int(ceil(mediaBox.height * scale))
+            guard widthPx > 0, heightPx > 0 else { continue }
 
-            // Let CoreGraphics own the backing buffer (data: nil) so the pointer
-            // remains valid across all draw calls. Passing &swiftArray would only
-            // pin the buffer for the duration of CGContext(data:...) itself.
             guard let ctx = CGContext(
                 data: nil,
                 width: widthPx,
                 height: heightPx,
                 bitsPerComponent: 8,
-                bytesPerRow: 0,          // 0 = CoreGraphics picks optimal stride
+                bytesPerRow: 0,
                 space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             ) else {
                 throw DocReaderError.internalError("CGContext creation failed")
             }
 
-            // White background
+            // White background then render the PDF page
             ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
             ctx.fill(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
-
-            // Use CGContext.drawPDFPage (pure CoreGraphics, no thread restriction).
-            // PDFPage.draw(with:to:) silently does nothing on iOS when called off
-            // the main thread; page.pageRef gives us the underlying CGPDFPage.
             ctx.scaleBy(x: scale, y: scale)
-            if let cgPage = page.pageRef {
-                ctx.drawPDFPage(cgPage)
-            }
+            ctx.drawPDFPage(cgPage)
 
             // Read pixels from the CoreGraphics-managed buffer
             let actualBytesPerRow = ctx.bytesPerRow
