@@ -39,6 +39,13 @@ public enum PrintExporter {
         let pageCount = cgDoc.numberOfPages   // 1-based in CoreGraphics
         let scale = CGFloat(resolution) / 72.0
         var pages: [PrintRasterPage] = []
+
+        // Raw RGBA pixel capture returned from MainActor, safe to send as value type.
+        struct RawBitmap: Sendable {
+            let bytes: [UInt8]
+            let bytesPerRow: Int
+        }
+
         for i in 1...max(1, pageCount) {
             guard let cgPage = cgDoc.page(at: i) else { continue }
             let mediaBox = cgPage.getBoxRect(.mediaBox)
@@ -46,44 +53,48 @@ public enum PrintExporter {
             let heightPx = Int(ceil(mediaBox.height * scale))
             guard widthPx > 0, heightPx > 0 else { continue }
 
-            guard let ctx = CGContext(
-                data: nil,
-                width: widthPx,
-                height: heightPx,
-                bitsPerComponent: 8,
-                bytesPerRow: 0,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ) else {
-                throw DocReaderError.internalError("CGContext creation failed")
-            }
-
-            // White background, then draw the PDF page on the main thread.
-            // CGContext.drawPDFPage produces blank output on iOS background threads.
-            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-            ctx.fill(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
-            ctx.scaleBy(x: scale, y: scale)
-            let boxCtx  = Unchecked(value: ctx)
+            // Move the entire CGContext lifecycle onto the main thread.
+            // On iOS, CGContext.drawPDFPage silently produces blank output when
+            // the context was created on a background thread — even with pure
+            // CoreGraphics (no PDFKit). Creating, filling, drawing, and reading
+            // pixels all within a single MainActor.run block avoids this.
             let boxPage = Unchecked(value: cgPage)
-            await MainActor.run { boxCtx.value.drawPDFPage(boxPage.value) }
-
-            // Read pixels from the CoreGraphics-managed buffer
-            let actualBytesPerRow = ctx.bytesPerRow
-            guard let rawPtr = ctx.data else {
-                throw DocReaderError.internalError("CGContext has no backing data")
+            let raw: RawBitmap? = await MainActor.run {
+                guard let ctx = CGContext(
+                    data: nil,
+                    width: widthPx,
+                    height: heightPx,
+                    bitsPerComponent: 8,
+                    bytesPerRow: 0,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                ) else { return nil }
+                ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+                ctx.fill(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
+                ctx.scaleBy(x: scale, y: scale)
+                ctx.drawPDFPage(boxPage.value)
+                let bpr = ctx.bytesPerRow
+                guard let ptr = ctx.data else { return nil }
+                let buf = UnsafeBufferPointer(
+                    start: ptr.bindMemory(to: UInt8.self, capacity: bpr * heightPx),
+                    count: bpr * heightPx
+                )
+                return RawBitmap(bytes: Array(buf), bytesPerRow: bpr)
             }
-            let rawBytes = rawPtr.bindMemory(to: UInt8.self, capacity: actualBytesPerRow * heightPx)
+            guard let raw else {
+                throw DocReaderError.internalError("CGContext creation or draw failed")
+            }
 
             // Strip alpha: RGBA → RGB, flip rows (CGContext origin is bottom-left)
             var rgb = [UInt8](repeating: 0, count: widthPx * heightPx * 3)
             for row in 0..<heightPx {
-                let srcRow = heightPx - 1 - row   // flip vertical
+                let srcRow = heightPx - 1 - row
                 for col in 0..<widthPx {
-                    let srcBase = srcRow * actualBytesPerRow + col * 4
-                    let dstBase = row   * widthPx * 3 + col * 3
-                    rgb[dstBase]     = rawBytes[srcBase]
-                    rgb[dstBase + 1] = rawBytes[srcBase + 1]
-                    rgb[dstBase + 2] = rawBytes[srcBase + 2]
+                    let srcBase = srcRow * raw.bytesPerRow + col * 4
+                    let dstBase = row * widthPx * 3 + col * 3
+                    rgb[dstBase]     = raw.bytes[srcBase]
+                    rgb[dstBase + 1] = raw.bytes[srcBase + 1]
+                    rgb[dstBase + 2] = raw.bytes[srcBase + 2]
                 }
             }
 
