@@ -15,23 +15,26 @@ public struct PrintRasterPage: Sendable {
 
 /// Converts PDF data into printer-native formats (PWG-Raster, URF, PCL 5, PCL XL).
 ///
-/// All methods are isolated to ``DocRenderActor`` and can be called on any PDF `Data`.
-/// Wraps a non-Sendable CoreGraphics value for safe cross-actor hand-off.
-/// Safe to use only when the sender is suspended during the recipient's access
-/// (i.e., inside `await MainActor.run { ... }`).
-private struct Unchecked<T>: @unchecked Sendable { let value: T }
-
+/// All public methods are isolated to ``DocRenderActor``. Internally, all CoreGraphics
+/// PDF operations run on `MainActor` because `CGPDFDocument`, `CGPDFPage`, and
+/// `CGContext.drawPDFPage` require main-thread affinity on iOS.
 public enum PrintExporter {
 
     // MARK: - PDF → Bitmap
 
     /// Renders every page of `pdf` into ``PrintRasterPage`` values at `resolution` DPI.
-    ///
-    /// Uses pure CoreGraphics (`CGPDFDocument`). The actual PDF draw call is
-    /// dispatched to `MainActor` because `CGContext.drawPDFPage` silently produces
-    /// a blank result when called off the main thread on iOS.
     @DocRenderActor
     public static func renderPages(pdf: Data, resolution: Int) async throws -> [PrintRasterPage] {
+        try await MainActor.run { try renderPagesOnMain(pdf: pdf, resolution: resolution) }
+    }
+
+    /// Synchronous implementation — must run on main thread.
+    ///
+    /// `CGPDFDocument`, `CGPDFPage`, and `CGContext.drawPDFPage` all require
+    /// main-thread affinity on iOS. Keeping the entire pipeline in one
+    /// `@MainActor` function avoids any cross-thread object access.
+    @MainActor
+    private static func renderPagesOnMain(pdf: Data, resolution: Int) throws -> [PrintRasterPage] {
         guard let provider = CGDataProvider(data: pdf as CFData),
               let cgDoc = CGPDFDocument(provider) else {
             throw DocReaderError.corruptedFile
@@ -41,12 +44,6 @@ public enum PrintExporter {
         let scale = CGFloat(resolution) / 72.0
         var pages: [PrintRasterPage] = []
 
-        // RGB+padding pixel capture returned from MainActor, safe to send as value type.
-        struct RawBitmap: Sendable {
-            let bytes: [UInt8]
-            let bytesPerRow: Int
-        }
-
         for i in 1...pageCount {
             guard let cgPage = cgDoc.page(at: i) else { continue }
             let mediaBox = cgPage.getBoxRect(.mediaBox)
@@ -54,48 +51,39 @@ public enum PrintExporter {
             let heightPx = Int(ceil(mediaBox.height * scale))
             guard widthPx > 0, heightPx > 0 else { continue }
 
-            // Move the entire CGContext lifecycle onto the main thread.
-            // On iOS, CGContext.drawPDFPage silently produces blank output when
-            // the context was created on a background thread — even with pure
-            // CoreGraphics (no PDFKit). Creating, filling, drawing, and reading
-            // pixels all within a single MainActor.run block avoids this.
-            let boxPage = Unchecked(value: cgPage)
-            let raw: RawBitmap? = await MainActor.run {
-                guard let ctx = CGContext(
-                    data: nil,
-                    width: widthPx,
-                    height: heightPx,
-                    bitsPerComponent: 8,
-                    bytesPerRow: 0,
-                    space: CGColorSpaceCreateDeviceRGB(),
-                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-                ) else { return nil }
-                ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-                ctx.fill(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
-                ctx.scaleBy(x: scale, y: scale)
-                ctx.drawPDFPage(boxPage.value)
-                let bpr = ctx.bytesPerRow
-                guard let ptr = ctx.data else { return nil }
-                let buf = UnsafeBufferPointer(
-                    start: ptr.bindMemory(to: UInt8.self, capacity: bpr * heightPx),
-                    count: bpr * heightPx
-                )
-                return RawBitmap(bytes: Array(buf), bytesPerRow: bpr)
-            }
-            guard let raw else {
+            guard let ctx = CGContext(
+                data: nil,
+                width: widthPx,
+                height: heightPx,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+            ) else {
                 throw DocReaderError.internalError("CGContext creation failed (widthPx=\(widthPx), heightPx=\(heightPx))")
             }
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.drawPDFPage(cgPage)
 
-            // Strip alpha: RGBA → RGB, flip rows (CGContext origin is bottom-left)
+            let bpr = ctx.bytesPerRow
+            guard let ptr = ctx.data else { continue }
+            let rawBytes = UnsafeBufferPointer(
+                start: ptr.bindMemory(to: UInt8.self, capacity: bpr * heightPx),
+                count: bpr * heightPx
+            )
+
+            // Strip padding byte, flip rows (CGContext origin is bottom-left)
             var rgb = [UInt8](repeating: 0, count: widthPx * heightPx * 3)
             for row in 0..<heightPx {
                 let srcRow = heightPx - 1 - row
                 for col in 0..<widthPx {
-                    let srcBase = srcRow * raw.bytesPerRow + col * 4
+                    let srcBase = srcRow * bpr + col * 4
                     let dstBase = row * widthPx * 3 + col * 3
-                    rgb[dstBase]     = raw.bytes[srcBase]
-                    rgb[dstBase + 1] = raw.bytes[srcBase + 1]
-                    rgb[dstBase + 2] = raw.bytes[srcBase + 2]
+                    rgb[dstBase]     = rawBytes[srcBase]
+                    rgb[dstBase + 1] = rawBytes[srcBase + 1]
+                    rgb[dstBase + 2] = rawBytes[srcBase + 2]
                 }
             }
 
