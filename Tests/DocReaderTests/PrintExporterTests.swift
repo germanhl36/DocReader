@@ -100,14 +100,12 @@ final class PrintExporterTests: XCTestCase {
 
     func testPackBitsRunEncoding() {
         // Identical scanline: all red pixels → compact run encoding
-        let red: [UInt8] = Array(repeating: 0, count: 0)  // start with empty
         var row = [UInt8]()
         for _ in 0..<10 { row += [255, 0, 0] }            // 10 identical red pixels
         let encoded = PrintExporter.packBitsRow(row[...])
         // A 10-pixel identical run encodes as 2 bytes header + 3 pixel = 5 bytes total (for 10 pixels)
         // Much smaller than raw 30 bytes
         XCTAssertLessThan(encoded.count, row.count)
-        _ = red  // suppress unused warning
     }
 
     func testPackBitsLiteralEncoding() {

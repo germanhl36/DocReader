@@ -37,16 +37,17 @@ public enum PrintExporter {
             throw DocReaderError.corruptedFile
         }
         let pageCount = cgDoc.numberOfPages   // 1-based in CoreGraphics
+        guard pageCount > 0 else { return [] }
         let scale = CGFloat(resolution) / 72.0
         var pages: [PrintRasterPage] = []
 
-        // Raw RGBA pixel capture returned from MainActor, safe to send as value type.
+        // RGB+padding pixel capture returned from MainActor, safe to send as value type.
         struct RawBitmap: Sendable {
             let bytes: [UInt8]
             let bytesPerRow: Int
         }
 
-        for i in 1...max(1, pageCount) {
+        for i in 1...pageCount {
             guard let cgPage = cgDoc.page(at: i) else { continue }
             let mediaBox = cgPage.getBoxRect(.mediaBox)
             let widthPx  = Int(ceil(mediaBox.width  * scale))
@@ -67,7 +68,7 @@ public enum PrintExporter {
                     bitsPerComponent: 8,
                     bytesPerRow: 0,
                     space: CGColorSpaceCreateDeviceRGB(),
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
                 ) else { return nil }
                 ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
                 ctx.fill(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
@@ -82,7 +83,7 @@ public enum PrintExporter {
                 return RawBitmap(bytes: Array(buf), bytesPerRow: bpr)
             }
             guard let raw else {
-                throw DocReaderError.internalError("CGContext creation or draw failed")
+                throw DocReaderError.internalError("CGContext creation failed (widthPx=\(widthPx), heightPx=\(heightPx))")
             }
 
             // Strip alpha: RGBA → RGB, flip rows (CGContext origin is bottom-left)
