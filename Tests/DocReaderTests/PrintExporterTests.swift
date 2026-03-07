@@ -24,6 +24,30 @@ final class PrintExporterTests: XCTestCase {
         return pdfData as Data
     }
 
+    /// Generates a PDF with a black rectangle so pixel content is verifiable.
+    private func makeNonWhitePDF() throws -> Data {
+        var mediaBox = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let pdfData = NSMutableData()
+        guard let consumer = CGDataConsumer(data: pdfData),
+              let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw DocReaderError.internalError("Could not create PDF context")
+        }
+        ctx.beginPDFPage(nil)
+        ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+        ctx.fill(CGRect(x: 10, y: 10, width: 80, height: 80))
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return pdfData as Data
+    }
+
+    func testRenderPagesProducesNonWhitePixels() async throws {
+        let pdf = try makeNonWhitePDF()
+        let pages = try await PrintExporter.renderPages(pdf: pdf, resolution: 72)
+        XCTAssertFalse(pages.isEmpty, "Should render at least one page")
+        let bytes = [UInt8](pages[0].rgbData)
+        XCTAssertTrue(bytes.contains { $0 != 255 }, "Rendered page must contain non-white pixels")
+    }
+
     // MARK: - PWG-Raster tests
 
     func testPWGRasterMagicBytes() async throws {

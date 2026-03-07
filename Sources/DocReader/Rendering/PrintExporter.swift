@@ -16,16 +16,22 @@ public struct PrintRasterPage: Sendable {
 /// Converts PDF data into printer-native formats (PWG-Raster, URF, PCL 5, PCL XL).
 ///
 /// All methods are isolated to ``DocRenderActor`` and can be called on any PDF `Data`.
+/// Wraps a non-Sendable CoreGraphics value for safe cross-actor hand-off.
+/// Safe to use only when the sender is suspended during the recipient's access
+/// (i.e., inside `await MainActor.run { ... }`).
+private struct Unchecked<T>: @unchecked Sendable { let value: T }
+
 public enum PrintExporter {
 
     // MARK: - PDF → Bitmap
 
     /// Renders every page of `pdf` into ``PrintRasterPage`` values at `resolution` DPI.
     ///
-    /// Uses pure CoreGraphics (`CGPDFDocument`) — no PDFKit — so rendering is
-    /// fully thread-safe and works correctly on `@DocRenderActor`.
+    /// Uses pure CoreGraphics (`CGPDFDocument`). The actual PDF draw call is
+    /// dispatched to `MainActor` because `CGContext.drawPDFPage` silently produces
+    /// a blank result when called off the main thread on iOS.
     @DocRenderActor
-    public static func renderPages(pdf: Data, resolution: Int) throws -> [PrintRasterPage] {
+    public static func renderPages(pdf: Data, resolution: Int) async throws -> [PrintRasterPage] {
         guard let provider = CGDataProvider(data: pdf as CFData),
               let cgDoc = CGPDFDocument(provider) else {
             throw DocReaderError.corruptedFile
@@ -52,11 +58,14 @@ public enum PrintExporter {
                 throw DocReaderError.internalError("CGContext creation failed")
             }
 
-            // White background then render the PDF page
+            // White background, then draw the PDF page on the main thread.
+            // CGContext.drawPDFPage produces blank output on iOS background threads.
             ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
             ctx.fill(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
             ctx.scaleBy(x: scale, y: scale)
-            ctx.drawPDFPage(cgPage)
+            let boxCtx  = Unchecked(value: ctx)
+            let boxPage = Unchecked(value: cgPage)
+            await MainActor.run { boxCtx.value.drawPDFPage(boxPage.value) }
 
             // Read pixels from the CoreGraphics-managed buffer
             let actualBytesPerRow = ctx.bytesPerRow
@@ -93,8 +102,8 @@ public enum PrintExporter {
 
     /// Exports `pdf` as PWG-Raster (cups_page_header2_t, uncompressed RGB).
     @DocRenderActor
-    public static func exportPWGRaster(pdf: Data, resolution: Int = 300) throws -> Data {
-        let pages = try renderPages(pdf: pdf, resolution: resolution)
+    public static func exportPWGRaster(pdf: Data, resolution: Int = 300) async throws -> Data {
+        let pages = try await renderPages(pdf: pdf, resolution: resolution)
         var out = [UInt8]()
         // Magic "RaS2"
         out += Array("RaS2".utf8)
@@ -136,8 +145,8 @@ public enum PrintExporter {
 
     /// Exports `pdf` as Apple URF (UNIRAST) with PackBits compression.
     @DocRenderActor
-    public static func exportURF(pdf: Data, resolution: Int = 300) throws -> Data {
-        let pages = try renderPages(pdf: pdf, resolution: resolution)
+    public static func exportURF(pdf: Data, resolution: Int = 300) async throws -> Data {
+        let pages = try await renderPages(pdf: pdf, resolution: resolution)
         var out = [UInt8]()
         // Magic "UNIRAST\0"
         out += Array("UNIRAST\0".utf8)
@@ -172,8 +181,8 @@ public enum PrintExporter {
 
     /// Exports `pdf` as PCL 5 raster.
     @DocRenderActor
-    public static func exportPCL(pdf: Data, resolution: Int = 300) throws -> Data {
-        let pages = try renderPages(pdf: pdf, resolution: resolution)
+    public static func exportPCL(pdf: Data, resolution: Int = 300) async throws -> Data {
+        let pages = try await renderPages(pdf: pdf, resolution: resolution)
         var out = [UInt8]()
         out += [0x1B, 0x45]  // ESC E reset
 
@@ -217,8 +226,8 @@ public enum PrintExporter {
 
     /// Exports `pdf` as PCL XL (binary, little-endian binding, Protocol 3.0).
     @DocRenderActor
-    public static func exportPCLXL(pdf: Data, resolution: Int = 300) throws -> Data {
-        let pages = try renderPages(pdf: pdf, resolution: resolution)
+    public static func exportPCLXL(pdf: Data, resolution: Int = 300) async throws -> Data {
+        let pages = try await renderPages(pdf: pdf, resolution: resolution)
         var out = [UInt8]()
 
         // Stream header (ASCII, CRLF-terminated)
