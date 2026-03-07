@@ -54,8 +54,13 @@ public enum PrintExporter {
             ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
             ctx.fill(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
 
+            // Use CGContext.drawPDFPage (pure CoreGraphics, no thread restriction).
+            // PDFPage.draw(with:to:) silently does nothing on iOS when called off
+            // the main thread; page.pageRef gives us the underlying CGPDFPage.
             ctx.scaleBy(x: scale, y: scale)
-            page.draw(with: .mediaBox, to: ctx)
+            if let cgPage = page.pageRef {
+                ctx.drawPDFPage(cgPage)
+            }
 
             // Read pixels from the CoreGraphics-managed buffer
             let actualBytesPerRow = ctx.bytesPerRow
