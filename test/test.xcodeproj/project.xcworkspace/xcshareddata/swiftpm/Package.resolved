@@ -1,0 +1,33 @@
+{
+  "originHash" : "157e3749c81087d1276e2ccf4178e168529c260d36804913c2351a94d8636a53",
+  "pins" : [
+    {
+      "identity" : "docreader",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/germanhl36/DocReader.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "5be67feb53b828ceca4d3c524cfae28d7b2e72f3"
+      }
+    },
+    {
+      "identity" : "olekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/CoreOffice/OLEKit.git",
+      "state" : {
+        "revision" : "59b18787edbb010152d5c0a31ecb8527b966ab4f",
+        "version" : "0.2.0"
+      }
+    },
+    {
+      "identity" : "zipfoundation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/weichsel/ZIPFoundation.git",
+      "state" : {
+        "revision" : "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
+        "version" : "0.9.20"
+      }
+    }
+  ],
+  "version" : 3
+}
