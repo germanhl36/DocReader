@@ -33,10 +33,19 @@ public enum PrintExporter {
     /// `CGPDFDocument`, `CGPDFPage`, and `CGContext.drawPDFPage` all require
     /// main-thread affinity on iOS. Keeping the entire pipeline in one
     /// `@MainActor` function avoids any cross-thread object access.
+    ///
+    /// A temporary file is used for the `CGPDFDocument` because file-backed
+    /// providers are more reliable on iOS than in-memory `CGDataProvider`.
     @MainActor
     private static func renderPagesOnMain(pdf: Data, resolution: Int) throws -> [PrintRasterPage] {
-        guard let provider = CGDataProvider(data: pdf as CFData),
-              let cgDoc = CGPDFDocument(provider) else {
+        // Write to a temp file so CGPDFDocument uses a file-backed provider.
+        // In-memory CGDataProvider can silently fail to render on iOS.
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".pdf")
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
+        try pdf.write(to: tmpURL)
+
+        guard let cgDoc = CGPDFDocument(tmpURL as CFURL) else {
             throw DocReaderError.corruptedFile
         }
         let pageCount = cgDoc.numberOfPages   // 1-based in CoreGraphics
