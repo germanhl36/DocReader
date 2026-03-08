@@ -73,7 +73,13 @@ public enum PrintExporter {
             }
             ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
             ctx.fill(CGRect(x: 0, y: 0, width: widthPx, height: heightPx))
-            ctx.scaleBy(x: scale, y: scale)
+            // Flip the Y-axis before drawing the PDF page.
+            // CGBitmapContext stores row 0 at the visual top but CG drawing coordinates
+            // have Y=0 at the bottom. Without a negative Y scale, iOS's PDF renderer
+            // silently produces blank output. The row flip in pixel extraction below
+            // compensates for this transform so output row 0 = page top.
+            ctx.translateBy(x: 0, y: CGFloat(heightPx))
+            ctx.scaleBy(x: scale, y: -scale)
             ctx.drawPDFPage(cgPage)
 
             let bpr = ctx.bytesPerRow
