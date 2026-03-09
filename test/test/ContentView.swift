@@ -145,35 +145,26 @@ struct ContentView: View {
                 
                 guard let pdf = try? Data(contentsOf: docURL) else {
                     await MainActor.run {
-                        errorMessage = "Failed to export PDF"
+                        errorMessage = "Failed to read PDF"
                         isLoading = false
                     }
                     return
                 }
-                // PWG (CUPS / IPP printer
-                
-                let pwgFromPDF = try await PrintExporter.exportPWGRaster(pdf: pdf, resolution: 300)
-                let savedPWGURL = try saveToDocuments(pdfData: pwgFromPDF, filename: "DocReader_SDD.pwg")
 
-                  // URF / UNIRAST (AirPrint)
-                let urfFromPDF  = try await PrintExporter.exportURF(pdf: pdf, resolution: 300)
-                let savedURFURL = try saveToDocuments(pdfData: urfFromPDF, filename: "DocReader_SDD.urf")
-
-
-                  // PCL 5 (LaserJet-compatible printers)
-//                let pcl  = try await PrintExporter.exportPCL(pdf: pdf, resolution: 300)
-//
-//                let savedPCLURL = try saveToDocuments(pdfData: pcl, filename: "DocReader_SDD.pcl")
-//
-//                  // PCL XL / PCL 6 (newer HP and compatible printers)
-//                  let pclxl = try await PrintExporter.exportPCLXL(pdf: pdf, resolution: 600)
-//                let savedPCLXLURL = try saveToDocuments(pdfData: pclxl, filename: "DocReader_SDD_PCLXL.pcl")
-
+                // Show PDF immediately
                 await MainActor.run {
-//                    self.documentInfo = docInfo
                     self.pdfData = pdf
                     self.isLoading = false
                 }
+
+                // Run printer-format exports in background
+                let pwgFromPDF = try await PrintExporter.exportPWGRaster(pdf: pdf, resolution: 300)
+                let savedPWGURL = try saveToDocuments(pdfData: pwgFromPDF, filename: "DocReader_SDD.pwg")
+                NSLog("✅ PWG saved successfully to: \(savedPWGURL.path)")
+
+                let urfFromPDF = try await PrintExporter.exportURF(pdf: pdf, resolution: 300)
+                let savedURFURL = try saveToDocuments(pdfData: urfFromPDF, filename: "DocReader_SDD.urf")
+                NSLog("✅ URF saved successfully to: \(savedURFURL.path)")
             } catch {
                 await MainActor.run {
                     errorMessage = "Error: \(error.localizedDescription)"
