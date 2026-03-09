@@ -83,6 +83,7 @@ struct ContentView: View {
                 .disabled(isLoading)
             }
             .navigationTitle("Document Viewer")
+            .task { loadDocument() }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     if pdfData != nil {
